@@ -28,3 +28,20 @@ def test_cookbook_advertised_bind_urls_keep_connectable_host():
     assert "function _endpointFromAdvertisedUrl" in src
     assert "_isAnyBindHost(u.hostname) ? currentHost" in src
     assert "host = u.hostname || host;" not in src
+
+
+def test_parse_serve_phase_detects_native_llama_server_ready():
+    """Native llama.cpp llama-server prints its own readiness lines, not
+    uvicorn's "Application startup complete". _parseServePhase must flag those
+    as ready or _serveReady never flips and the endpoint is never registered,
+    so a healthy GPU model never reaches the picker.
+
+    The native check must also precede the build-progress matcher so a finished
+    build still in the snapshot tail can't pin the task at "building".
+    """
+    src = _source()
+    assert "export function _parseServePhase" in src
+    native = "if (/server is listening on|all slots are idle|llama_server: model loaded/i.test(flat))"
+    assert native in src
+    # Ordering: native-ready must come before the llama build-progress matcher.
+    assert src.index(native) < src.index("const llamaBuildMatches =")

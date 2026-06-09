@@ -315,6 +315,15 @@ export function _parseServePhase(snapshot) {
   if (/Ollama API ready on port\s+\d+/i.test(flat)) {
     return { phase: 'ready', status: 'ready' };
   }
+  // Native llama.cpp llama-server (GPU build) prints its own readiness lines
+  // instead of uvicorn's "Application startup complete". This must run BEFORE
+  // the build-progress check below, so a finished build whose tail is still in
+  // the snapshot doesn't pin the task at "building" once the server is up.
+  // Without this, _serveReady never flips and the endpoint is never registered,
+  // so a healthy GPU model never appears in the picker.
+  if (/server is listening on|all slots are idle|llama_server: model loaded/i.test(flat)) {
+    return { phase: 'ready', status: 'ready' };
+  }
   const llamaBuildMatches = [...flat.matchAll(/\[\s*(\d{1,3})%\]\s*(?:Building|Linking)/gi)];
   if (llamaBuildMatches.length) {
     const pct = Math.min(100, parseInt(llamaBuildMatches[llamaBuildMatches.length - 1][1], 10));
