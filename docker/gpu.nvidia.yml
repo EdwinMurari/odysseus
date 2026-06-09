@@ -22,6 +22,18 @@
 # Cookbook -> Dependencies (or pip) before serving GPU models.
 services:
   odysseus:
+    # Bake a CUDA llama-server into the image at build time (multi-stage in the
+    # Dockerfile). With this, Cookbook's first llama.cpp serve finds the binary
+    # on PATH and skips the slow, fragile from-source build that otherwise runs
+    # on every container recreate. LLAMA_CUDA_ARCH=86 targets Ampere / RTX
+    # 30-series; override for other cards (Ada=89, Hopper=90, Turing=75).
+    # Context/dockerfile are inherited from docker-compose.yml's `build: .`
+    # (resolved against that file's dir); we only add build args here so the
+    # path stays unambiguous when the two files are merged.
+    build:
+      args:
+        LLAMA_CUDA: "on"
+        LLAMA_CUDA_ARCH: "86"
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
