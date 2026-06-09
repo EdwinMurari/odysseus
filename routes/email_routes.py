@@ -1092,6 +1092,133 @@ def setup_email_routes():
             logger.error(f"contacts list failed: {e}")
             return {"contacts": [], "error": "Mail operation failed"}
 
+    def _search_emails_sync(q, folder, limit, account_id, owner):
+        """Sync IMAP search — wrapped in to_thread by the async handler.
+
+        Matches subject, from, or body text via one IMAP SEARCH, then
+        batch-fetches headers for the matching UIDs in a single UID FETCH.
+        The old per-UID fetch loop was N sequential round-trips and tipped
+        searches past the 45s request timeout (504); the batched form is
+        one round-trip, mirroring _list_emails_sync.
+
+        When the caller asks for INBOX and the account has an "All Mail"
+        folder (Gmail does), we transparently swap to All Mail so the
+        search surfaces archived / labelled emails too. Plain IMAP
+        accounts fall back to whatever folder the caller specified.
+        """
+        with _imap(account_id, owner=owner) as conn:
+            # If the user asked for INBOX, try to upgrade to All Mail —
+            # one folder == every email on Gmail-class servers.
+            effective_folder = folder
+            if (folder or "").upper() == "INBOX":
+                try:
+                    status, folder_lines = conn.list()
+                    if status == "OK" and folder_lines:
+                        for raw in folder_lines:
+                            if isinstance(raw, bytes):
+                                raw = raw.decode("utf-8", errors="replace")
+                            m = re.match(r"\((?P<flags>[^)]*)\)\s+\"[^\"]*\"\s+(?P<name>.+)", raw)
+                            if not m:
+                                continue
+                            flags = (m.group("flags") or "").lower()
+                            name = m.group("name").strip().strip('"')
+                            if "\\all" in flags or "all mail" in name.lower():
+                                effective_folder = name
+                                break
+                except Exception:
+                    pass
+            conn.select(_q(effective_folder), readonly=True)
+
+            # Escape backslash and quote for the IMAP-SEARCH quoted-string.
+            q_escaped = q.replace('\\', '\\\\').replace('"', '\\"')
+            search_cmd = f'(OR OR FROM "{q_escaped}" SUBJECT "{q_escaped}" TEXT "{q_escaped}")'
+
+            status, data = _imap_uid_search(conn, search_cmd)
+            if status != "OK" or not data[0]:
+                return {"emails": [], "total": 0, "query": q, "folder": effective_folder}
+
+            uid_list = data[0].split()
+            total = len(uid_list)
+            uid_list = list(reversed(uid_list))[:limit]
+
+            # Batch-fetch headers for all matching UIDs in one round-trip.
+            status, msg_data = _imap_uid_fetch(conn, b",".join(uid_list), "(UID FLAGS RFC822.HEADER)")
+            if status != "OK":
+                return {"emails": [], "total": 0, "query": q}
+
+            # imaplib batch responses interleave (meta, payload) tuples and
+            # `b')'` terminators — group by message (each tuple whose meta
+            # starts with a seq number begins a new record).
+            seq_re = re.compile(rb'^(\d+)\s+\(')
+            grouped = []
+            for part in (msg_data or []):
+                if isinstance(part, tuple):
+                    meta_b = part[0] if isinstance(part[0], (bytes, bytearray)) else str(part[0]).encode()
+                    if seq_re.match(meta_b):
+                        grouped.append((meta_b, part[1]))
+                    elif grouped:
+                        cur_meta, cur_payload = grouped[-1]
+                        grouped[-1] = (cur_meta + b" " + meta_b, cur_payload or part[1])
+
+            emails = []
+            for meta_b, raw_header in grouped:
+                try:
+                    meta = meta_b.decode(errors="replace")
+                    stable_uid = _uid_from_fetch_meta(meta_b)
+                    if not stable_uid:
+                        continue
+                    flag_match = re.search(r'FLAGS \(([^)]*)\)', meta)
+                    flags = flag_match.group(1) if flag_match else ""
+                    if not raw_header:
+                        continue
+                    msg = email_mod.message_from_bytes(raw_header)
+                    subject = _decode_header(msg.get("Subject", "(no subject)"))
+                    sender = _decode_header(msg.get("From", "unknown"))
+                    date_str = msg.get("Date", "")
+                    message_id = msg.get("Message-ID", "")
+                    sender_name, sender_addr = email.utils.parseaddr(sender)
+                    to_str = _decode_header(msg.get("To", ""))
+                    cc_str = _decode_header(msg.get("Cc", ""))
+                    parsed_date = email.utils.parsedate_to_datetime(date_str) if date_str else None
+                    if parsed_date and parsed_date.tzinfo is None:
+                        from datetime import timezone as _tz
+                        parsed_date = parsed_date.replace(tzinfo=_tz.utc)
+                    iso_date = parsed_date.isoformat() if parsed_date else ""
+                    date_epoch = parsed_date.timestamp() if parsed_date else 0.0
+                    ct = msg.get("Content-Type", "")
+                    has_attachments = "multipart/mixed" in ct.lower() or "multipart/related" in ct.lower()
+                    emails.append({
+                        "uid": stable_uid,
+                        "message_id": message_id.strip(),
+                        "subject": subject,
+                        "from_name": sender_name or sender_addr,
+                        "from_address": sender_addr,
+                        "to": to_str,
+                        "cc": cc_str,
+                        "date": iso_date,
+                        "date_display": date_str,
+                        "date_epoch": date_epoch,
+                        "is_read": "\\Seen" in flags,
+                        "is_answered": "\\Answered" in flags,
+                        "is_flagged": "\\Flagged" in flags,
+                        "flags": flags,
+                        "has_attachments": has_attachments,
+                        # Stamp the folder so the frontend opens each email
+                        # from the folder it actually lives in (the search
+                        # may have run against All Mail even though the caller
+                        # asked for INBOX), otherwise clicks open whatever
+                        # happens to have the same UID in INBOX → wrong email.
+                        "folder": effective_folder,
+                    })
+                except Exception as e:
+                    logger.warning(f"Error parsing search result: {e}")
+                    continue
+
+            # IMAP returns batched results in seq-set order, not the
+            # newest-first order we want — sort by parsed UTC epoch desc.
+            emails.sort(key=lambda x: x.get("date_epoch") or 0.0, reverse=True)
+            return {"emails": emails, "total": total, "query": q, "folder": effective_folder}
+
     @router.get("/search")
     # Sync def: the body is blocking IMAP I/O with no awaits. As `async def` it ran
     # directly on the event loop and stalled the whole app during a search; as a sync
@@ -1115,113 +1242,9 @@ def setup_email_routes():
         if "\r" in q or "\n" in q:
             raise HTTPException(400, "Invalid query")
         try:
-            with _imap(account_id, owner=owner) as conn:
-                # If the user asked for INBOX, try to upgrade to All Mail —
-                # one folder == every email on Gmail-class servers.
-                effective_folder = folder
-                if (folder or "").upper() == "INBOX":
-                    try:
-                        status, folder_lines = conn.list()
-                        if status == "OK" and folder_lines:
-                            for raw in folder_lines:
-                                if isinstance(raw, bytes):
-                                    raw = raw.decode("utf-8", errors="replace")
-                                m = re.match(r"\((?P<flags>[^)]*)\)\s+\"[^\"]*\"\s+(?P<name>.+)", raw)
-                                if not m:
-                                    continue
-                                flags = (m.group("flags") or "").lower()
-                                name = m.group("name").strip().strip('"')
-                                if "\\all" in flags or "all mail" in name.lower():
-                                    effective_folder = name
-                                    break
-                    except Exception:
-                        pass
-                conn.select(_q(effective_folder), readonly=True)
-
-                # Escape backslash and quote for the IMAP-SEARCH quoted-string.
-                q_escaped = q.replace('\\', '\\\\').replace('"', '\\"')
-                search_cmd = f'(OR OR FROM "{q_escaped}" SUBJECT "{q_escaped}" TEXT "{q_escaped}")'
-
-                status, data = _imap_uid_search(conn, search_cmd)
-                if status != "OK" or not data[0]:
-                    return {"emails": [], "total": 0, "query": q, "folder": effective_folder}
-
-                uid_list = data[0].split()
-                total = len(uid_list)
-                uid_list = list(reversed(uid_list))[:limit]
-
-                emails = []
-                for uid in uid_list:
-                    try:
-                        status, msg_data = _imap_uid_fetch(conn, uid, "(UID FLAGS RFC822.HEADER)")
-                        if status != "OK":
-                            continue
-                        raw_header = None
-                        flags = ""
-                        # Same Gmail caveat as the list route: FLAGS may
-                        # arrive after the header literal, so group bare
-                        # parts back into the message meta before scanning.
-                        for meta_b, payload in _group_uid_fetch_records(msg_data):
-                            if payload and b"RFC822.HEADER" in meta_b:
-                                raw_header = payload
-                            flag_match = re.search(rb'FLAGS \(([^)]*)\)', meta_b)
-                            if flag_match:
-                                flags = flag_match.group(1).decode(errors="replace")
-                        if not raw_header:
-                            continue
-                        msg = email_mod.message_from_bytes(raw_header)
-                        subject = _decode_header(msg.get("Subject", "(no subject)"))
-                        sender = _decode_header(msg.get("From", "unknown"))
-                        date_str = msg.get("Date", "")
-                        message_id = msg.get("Message-ID", "")
-                        sender_name, sender_addr = email.utils.parseaddr(sender)
-                        to_str = _decode_header(msg.get("To", ""))
-                        cc_str = _decode_header(msg.get("Cc", ""))
-                        parsed_date = email.utils.parsedate_to_datetime(date_str) if date_str else None
-                        if parsed_date and parsed_date.tzinfo is None:
-                            from datetime import timezone as _tz
-                            parsed_date = parsed_date.replace(tzinfo=_tz.utc)
-                        iso_date = parsed_date.isoformat() if parsed_date else ""
-                        date_epoch = parsed_date.timestamp() if parsed_date else 0.0
-                        ct = msg.get("Content-Type", "")
-                        has_attachments = "multipart/mixed" in ct.lower() or "multipart/related" in ct.lower()
-
-                        stable_uid = ""
-                        for part in msg_data:
-                            if isinstance(part, tuple):
-                                meta_b = part[0] if isinstance(part[0], bytes) else str(part[0]).encode()
-                                stable_uid = _uid_from_fetch_meta(meta_b) or stable_uid
-                        if not stable_uid:
-                            continue
-                        emails.append({
-                            "uid": stable_uid,
-                            "message_id": message_id.strip(),
-                            "subject": subject,
-                            "from_name": sender_name or sender_addr,
-                            "from_address": sender_addr,
-                            "to": to_str,
-                            "cc": cc_str,
-                            "date": iso_date,
-                            "date_display": date_str,
-                            "date_epoch": date_epoch,
-                            "is_read": "\\Seen" in flags,
-                            "is_answered": "\\Answered" in flags,
-                            "is_flagged": "\\Flagged" in flags,
-                            "flags": flags,
-                            "has_attachments": has_attachments,
-                            # Stamp the folder so the frontend opens each
-                            # email from the folder it actually lives in
-                            # (the search may have run against All Mail
-                            # even though the caller asked for INBOX),
-                            # otherwise clicks open whatever happens to
-                            # have the same UID in INBOX → wrong email.
-                            "folder": effective_folder,
-                        })
-                    except Exception as e:
-                        logger.warning(f"Error parsing search result {uid}: {e}")
-                        continue
-
-                return {"emails": emails, "total": total, "query": q}
+            # Handler is a sync def (see comment above), so FastAPI already runs
+            # this in a threadpool — call the batched helper directly.
+            return _search_emails_sync(q, folder, limit, account_id, owner)
         except Exception as e:
             logger.error(f"Search failed: {e}")
             return {"emails": [], "total": 0, "error": "Mail operation failed"}
