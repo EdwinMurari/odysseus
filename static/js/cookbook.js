@@ -581,8 +581,15 @@ export function _buildServeCmd(f, modelName, backend) {
     }
     if (_kv) {
       _lcExtra += ` --cache-type-k ${_kv} --cache-type-v ${_kv}`;
-      // llama-cpp-python exposes these as type_k/type_v; pass through best-effort.
-      _lcpExtra += ` --type_k ${_kv} --type_v ${_kv}`;
+      // llama-cpp-python's --type_k/--type_v take an INTEGER ggml_type enum, not
+      // a string like "f16" — passing the string makes llama_cpp.server exit
+      // with "argument --type_k: invalid int value: 'f16'", so the native
+      // llama-server failover lands on a fallback that can never start.
+      // Translate to the enum; skip the flag if unknown so the server uses its
+      // own default (f16) instead of crashing.
+      const _GGML_TYPE = { f32: 0, f16: 1, q4_0: 2, q4_1: 3, q5_0: 6, q5_1: 7, q8_0: 8 };
+      const _kvInt = _GGML_TYPE[String(_kv).toLowerCase()];
+      if (_kvInt !== undefined) _lcpExtra += ` --type_k ${_kvInt} --type_v ${_kvInt}`;
     }
     const _llamaFit = String(f.llama_fit || '').trim();
     if (['on', 'off'].includes(_llamaFit)) _lcExtra += ` --fit ${_llamaFit}`;

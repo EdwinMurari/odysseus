@@ -54,3 +54,19 @@ def test_windows_diffusers_uses_python_not_python3():
     assert "const diffusersPy = _isWindows() ? 'python' : _py3Bin;" in text
     assert "cmd += `${diffusersPy} scripts/diffusion_server.py" in text
     assert "cmd += `python3 scripts/diffusion_server.py" not in text
+
+
+def test_llamacpp_python_fallback_translates_kv_type_to_int():
+    """llama_cpp.server's --type_k/--type_v take an integer ggml_type enum, not
+    a string like 'f16'. The native llama-server uses the string form
+    (--cache-type-k f16); the Python failover must translate to the enum, or it
+    exits with "invalid int value: 'f16'" and the fallback can never start.
+    """
+    text = SRC.read_text(encoding="utf-8")
+    # Native path keeps the human-readable string form.
+    assert "--cache-type-k ${_kv} --cache-type-v ${_kv}" in text
+    # The ggml_type map exists and maps f16 -> 1, q8_0 -> 8, q4_0 -> 2.
+    assert "f16: 1" in text and "q8_0: 8" in text and "q4_0: 2" in text
+    # The Python fallback emits the INTEGER, never the raw string.
+    assert "--type_k ${_kvInt} --type_v ${_kvInt}" in text
+    assert "--type_k ${_kv} --type_v ${_kv}" not in text
