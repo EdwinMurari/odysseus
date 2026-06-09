@@ -1402,6 +1402,20 @@ def setup_cookbook_routes() -> APIRouter:
                 # ollama is found (otherwise macOS falls back to a slow source build).
                 # /opt/homebrew = Apple Silicon, /usr/local = Intel; harmless on Linux.
                 runner_lines.append('export PATH="$HOME/.local/bin:$HOME/bin:$HOME/llama.cpp/build/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"')
+                # Make pip-installed CUDA wheel libs (nvidia-cuda-*) visible for
+                # the whole serve, not just the one-time build. The native
+                # llama-server links against libcudart/libcublas from these
+                # wheels; the build branch below only runs when llama-server is
+                # missing, so without exporting these every serve the prebuilt
+                # binary can't load libcudart on later launches and silently
+                # falls back to the CPU-only Python bindings.
+                runner_lines.append('for _cudir in "$HOME"/.local/lib/python*/site-packages/nvidia/cu13 "$HOME"/.local/lib/python*/site-packages/nvidia/cu12; do')
+                runner_lines.append('  [ -d "$_cudir/lib" ] || continue')
+                runner_lines.append('  export CUDA_HOME="$_cudir"')
+                runner_lines.append('  export PATH="$_cudir/bin:$PATH"')
+                runner_lines.append('  export LD_LIBRARY_PATH="$_cudir/lib:${LD_LIBRARY_PATH:-}"')
+                runner_lines.append('  break')
+                runner_lines.append('done')
                 runner_lines.append('if [ -d /data/data/com.termux ]; then')
                 runner_lines.append('  # Termux: no native build — use the Python bindings (CPU).')
                 runner_lines.append('  if ! python3 -c "import llama_cpp" 2>/dev/null; then')

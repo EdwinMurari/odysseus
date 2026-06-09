@@ -1,4 +1,4 @@
-from routes.cookbook_helpers import _diagnose_serve_output
+from routes.cookbook_helpers import _diagnose_serve_output, _parse_serve_phase
 
 
 def test_cuda_oom_returns_diagnosis():
@@ -70,3 +70,26 @@ def test_no_gguf_found_pattern():
     result = _diagnose_serve_output(out)
     assert result is not None
     assert "GGUF" in result["message"]
+
+
+def test_native_llama_server_listening_is_ready():
+    # Native llama.cpp llama-server (GPU build) never prints uvicorn's
+    # "Application startup complete"; it must still be detected as ready.
+    out = (
+        "srv  llama_server: model loaded\n"
+        "srv  llama_server: server is listening on http://0.0.0.0:8000\n"
+        "srv  update_slots: all slots are idle"
+    )
+    assert _parse_serve_phase(out)["status"] == "ready"
+
+
+def test_native_llama_server_warnings_do_not_block_ready():
+    # The fit-params warning + control-token warnings are benign noise that
+    # precede a successful native serve; readiness must still win.
+    out = (
+        "common_fit_params: failed to fit params to free device memory: abort\n"
+        "load: control-looking token: 212 was not control-type; probably a bug\n"
+        "srv  llama_server: server is listening on http://0.0.0.0:8000"
+    )
+    assert _parse_serve_phase(out)["status"] == "ready"
+    assert _diagnose_serve_output(out) is None

@@ -545,6 +545,13 @@ function _serveOutputLooksReady(task) {
   return !!task?._serveReady
     || /Application startup complete/i.test(out)
     || /Ollama API ready on port\s+\d+/i.test(out)
+    // Native llama.cpp llama-server (GPU build) prints its own readiness lines,
+    // not uvicorn's "Application startup complete". Without these, a healthy
+    // GPU serve is mis-flagged "stopped before the server became reachable"
+    // because only the Python llama_cpp.server fallback emits the uvicorn line.
+    || /server is listening on\b/i.test(out)
+    || /\ball slots are idle\b/i.test(out)
+    || /llama_server: model loaded\b/i.test(out)
     || /(?:GET|POST)\s+\/[^\s]*\s+HTTP\/[\d.]+"\s*2\d\d/i.test(out);
 }
 

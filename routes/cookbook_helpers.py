@@ -821,7 +821,30 @@ def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
     runner_lines.append('      }')
     runner_lines.append('      if _odysseus_has_cudart; then')
     runner_lines.append('        echo "[odysseus] CUDA nvcc + cudart found — building llama-server with CUDA (GPU) support..."')
-    runner_lines.append('        cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
+    # pip CUDA wheels (nvidia-cuda-*) put libraries under <root>/lib with
+    # versioned sonames only (libcudart.so.13) and ship no lib64 dir, but cmake's
+    # FindCUDAToolkit probes <root>/lib64 for an unversioned libcudart.so and
+    # fails ("missing: CUDA_CUDART") despite nvcc being present. Synthesize the
+    # lib64 alias + unversioned .so symlinks, then pass CUDAToolkit_ROOT so cmake
+    # finds the wheel toolkit instead of a non-existent system one.
+    runner_lines.append('        if [ -n "$CUDA_HOME" ] && [ -d "$CUDA_HOME/lib" ]; then')
+    runner_lines.append('          [ -e "$CUDA_HOME/lib64" ] || ln -sf lib "$CUDA_HOME/lib64"')
+    runner_lines.append('          for _lib in "$CUDA_HOME"/lib/lib*.so.*; do [ -e "$_lib" ] || continue; _unv="${_lib%.so.*}.so"; [ -e "$_unv" ] || ln -sf "$(basename "$_lib")" "$_unv"; done')
+    runner_lines.append('        fi')
+    runner_lines.append('        _cuda_root_flag=""; [ -n "$CUDA_HOME" ] && _cuda_root_flag="-DCUDAToolkit_ROOT=$CUDA_HOME"')
+    # pip CUDA wheels can ship a newer nvcc than their bundled runtime headers
+    # (e.g. nvcc 13.3 with CUDART_VERSION 13.0). NVIDIA's cccl headers then abort
+    # every .cu compile with "CUDA compiler and CUDA toolkit headers are
+    # incompatible". A minor skew within the same major is ABI-safe, so pass the
+    # sanctioned escape hatch the cccl header itself documents.
+    #
+    # The wheel libs live in <root>/lib with versioned sonames (libcudart.so.13);
+    # ld can compile every .cu but then fails to LINK llama-server with
+    # "undefined reference to cudaMalloc@libcudart.so.13" because it can't find
+    # the shared-lib dependency at link time. Add the wheel lib dir to the
+    # linker search path (-L) and bake an rpath so the binary also loads those
+    # libs at runtime without depending on LD_LIBRARY_PATH.
+    runner_lines.append('        cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON $_cuda_root_flag -DCMAKE_CUDA_FLAGS="-DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK" -DCMAKE_EXE_LINKER_FLAGS="-L$CUDA_HOME/lib -Wl,-rpath,$CUDA_HOME/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L$CUDA_HOME/lib -Wl,-rpath,$CUDA_HOME/lib" && cmake --build build -j"$NPROC" --target llama-server && ln -sf ~/llama.cpp/build/bin/llama-server ~/bin/llama-server')
     runner_lines.append('      else')
     runner_lines.append('        echo "[odysseus] WARNING: nvcc found but CUDA runtime (libcudart.so) is not visible — building llama-server for CPU only."')
     runner_lines.append('        echo "[odysseus]   GPU inference will not be available for this llama.cpp build."')
@@ -920,6 +943,12 @@ def _parse_serve_phase(snapshot: str, task_type: str = "serve") -> dict:
     if "Application startup complete" in flat:
         return {"phase": "ready", "status": "ready"}
     if re.search(r'Ollama API ready on port\s+\d+', flat, re.I):
+        return {"phase": "ready", "status": "ready"}
+    # Native llama.cpp llama-server (GPU build) prints its own readiness lines
+    # instead of uvicorn's "Application startup complete" — only the Python
+    # llama_cpp.server fallback emits that. Recognize the native markers so a
+    # healthy GPU serve isn't stuck reporting "running"/"unreachable".
+    if re.search(r'server is listening on|all slots are idle|llama_server: model loaded', flat, re.I):
         return {"phase": "ready", "status": "ready"}
     # HTTP access logs (e.g. GET /v1/models 200 OK) mean the server is up and serving
     if re.search(r'(?:GET|POST)\s+/[^\s]*\s+HTTP/[\d.]+"\s*\d{3}', flat):
@@ -1140,7 +1169,7 @@ def _diagnose_serve_output(text: str) -> dict | None:
         if re.search(pattern, tail, re.I):
             return {"message": message, "suggestions": suggestions}
     if re.search(r"Traceback \(most recent call last\)", tail, re.I) and not re.search(
-        r"Application startup complete|GET /v1/|Uvicorn running on", tail, re.I
+        r"Application startup complete|GET /v1/|Uvicorn running on|server is listening on|all slots are idle", tail, re.I
     ):
         return {
             "message": "Python traceback detected during serve startup.",

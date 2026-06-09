@@ -663,6 +663,54 @@ def test_llama_cpp_linux_bootstrap_cuda_cmake_present_when_cudart_found():
     assert 'CUDA nvcc + cudart found' in script
 
 
+def test_llama_cpp_linux_bootstrap_cuda_build_points_cmake_at_pip_wheel():
+    """pip CUDA wheels need lib64/unversioned-.so symlinks + CUDAToolkit_ROOT.
+
+    Without these, cmake's FindCUDAToolkit fails with "missing: CUDA_CUDART"
+    even though nvcc and libcudart.so.13 are present, so the build falls back to
+    a CPU-only binary.
+    """
+    runner_lines = []
+    _append_llama_cpp_linux_accel_build_lines(runner_lines)
+    script = "\n".join(runner_lines)
+
+    # lib64 alias + unversioned .so symlink synthesis precedes the CUDA cmake.
+    assert 'ln -sf lib "$CUDA_HOME/lib64"' in script
+    assert '_unv="${_lib%.so.*}.so"' in script
+    # cmake is pointed at the wheel toolkit via CUDAToolkit_ROOT.
+    assert '-DCUDAToolkit_ROOT=$CUDA_HOME' in script
+    assert '-DGGML_CUDA=ON $_cuda_root_flag' in script
+    assert script.index('CUDA_HOME/lib64') < script.index('DGGML_CUDA=ON')
+    # pip CUDA wheels can ship a newer nvcc than their runtime headers (e.g.
+    # nvcc 13.3 / CUDART 13.0); cccl then aborts every .cu compile as
+    # "incompatible". The build must pass the sanctioned escape hatch.
+    assert '-DCMAKE_CUDA_FLAGS="-DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK"' in script
+    # The wheel libs have versioned sonames only, so the final llama-server link
+    # fails with "undefined reference to ...@libcudart.so.13" unless the wheel
+    # lib dir is on the linker search path; rpath makes it load at runtime too.
+    assert '-DCMAKE_EXE_LINKER_FLAGS="-L$CUDA_HOME/lib -Wl,-rpath,$CUDA_HOME/lib"' in script
+    assert '-DCMAKE_SHARED_LINKER_FLAGS="-L$CUDA_HOME/lib -Wl,-rpath,$CUDA_HOME/lib"' in script
+
+
+def test_llama_cpp_serve_exports_pip_cuda_libs_for_runtime():
+    """Every Linux llama.cpp serve must put the pip CUDA wheel libs on
+    LD_LIBRARY_PATH, not just the one-time build, or a prebuilt GPU
+    llama-server can't load libcudart on later launches and falls back to CPU.
+    """
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parent.parent / "routes" / "cookbook_routes.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'site-packages/nvidia/cu13' in src
+    assert 'export LD_LIBRARY_PATH="$_cudir/lib:${LD_LIBRARY_PATH:-}"' in src
+    # The export must precede the Termux/build branch so it always runs.
+    assert src.index('export LD_LIBRARY_PATH="$_cudir/lib') < src.index(
+        'if [ -d /data/data/com.termux ]; then'
+    )
+
+
 def test_llama_cpp_linux_bootstrap_nvcc_without_cudart_warns_and_falls_back():
     """When nvcc exists but cudart is absent, the script must warn and use CPU-only cmake."""
     runner_lines = []
