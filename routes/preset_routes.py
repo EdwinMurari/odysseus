@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class UserTemplateRequest(BaseModel):
     id: str = ""
     name: str = Field(..., min_length=1, max_length=100)
-    system_prompt: str = Field("", max_length=10000)
+    system_prompt: str = Field("", max_length=40000)
     temperature: float = Field(1.0, ge=0.0, le=2.0)
     max_tokens: int = Field(0, ge=0, le=65536)
 
