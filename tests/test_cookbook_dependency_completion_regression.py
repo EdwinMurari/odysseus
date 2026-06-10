@@ -73,7 +73,9 @@ def test_background_poll_recovers_done_for_stopped_dependency_install():
     downgrading the card to crashed."""
     source = _read("static/js/cookbookRunning.js")
 
-    assert "const depDone = !!task.payload?._dep && _depInstallSucceeded(task.output);" in source
+    # depDone now derives from observedOutput (retained output + live tail) so a
+    # success marker that only landed in the latest tail still counts.
+    assert "const depDone = !!task.payload?._dep && _depInstallSucceeded(observedOutput);" in source
     assert "(depDone || downloadDone) ? 'done' : (task.type === 'download' ? 'crashed' : 'stopped')" in source
 
 

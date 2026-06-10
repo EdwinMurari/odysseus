@@ -162,6 +162,15 @@ function _inferBaseRepo(text) {
 
 export const ERROR_PATTERNS = [
   {
+    pattern: /\bKilled\b|Process exited with code\s+137|exit code\s+137/i,
+    message: 'The operating system killed the server after it exhausted system memory.',
+    suggestion: 'Suggested action: lower context substantially, close other memory-heavy processes, and check any container or WSL memory limit before retrying.',
+    fixes: [
+      { label: 'Lower context to 8192', action: (panel) => _setPanelField(panel, 'ctx', '8192') },
+      { label: 'Lower context to 4096', action: (panel) => _setPanelField(panel, 'ctx', '4096') },
+    ],
+  },
+  {
     pattern: /No available memory for the cache blocks|Available KV cache memory:.*-/i,
     message: 'No GPU memory left for KV cache after loading model.',
     fixes: [

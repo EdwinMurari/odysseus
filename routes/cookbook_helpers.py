@@ -436,8 +436,13 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "        sz, nf, ic = 0, 0, False",
         "        if os.path.isdir(blobs):",
         "            for f in os.scandir(blobs):",
-        "                if f.is_file(): nf += 1; sz += f.stat().st_size",
-        "                if f.name.endswith('.incomplete'): ic = True",
+        "                if not f.is_file(): continue",
+        "                incomplete = f.name.endswith('.incomplete')",
+        "                final_blob = os.path.join(blobs, f.name.split('.', 1)[0]) if incomplete else ''",
+        "                unresolved = incomplete and not os.path.isfile(final_blob)",
+        "                if incomplete and not unresolved: continue",
+        "                nf += 1; sz += f.stat().st_size",
+        "                if unresolved: ic = True",
         "        snap = os.path.join(cache, d, 'snapshots')",
         "        # Windows HF cache stores files directly in snapshots/; blobs/ may be empty.",
         "        # Fallback: scan snapshots for real files when blobs yielded nothing.",
@@ -610,6 +615,10 @@ _LLAMA_CPP_PYTHON_GGML_TYPES = {
 _LLAMA_CPP_PYTHON_TYPE_FLAG_RE = re.compile(
     r"(?P<flag>--type_[kv])(?P<sep>\s+|=)(?P<quote>['\"]?)(?P<value>[A-Za-z0-9_]+)(?P=quote)"
 )
+_LLAMA_NATIVE_FALLBACK_RE = re.compile(
+    r"^if command -v llama-server >/dev/null 2>&1; then "
+    r"(?P<native>[^;]+); else (?P<python>[^;]+); fi$"
+)
 
 
 def _ollama_bind_from_cmd(cmd: str | None, *, default_host: str = "127.0.0.1") -> tuple[str, str]:
@@ -703,6 +712,11 @@ def _validate_serve_cmd(v: str | None) -> str | None:
     m = _GGUF_PRELUDE_RE.match(v)
     if m:
         rest = v[m.end():]
+        conditional = _LLAMA_NATIVE_FALLBACK_RE.fullmatch(rest)
+        if conditional:
+            _check_serve_binary(conditional.group("native").strip())
+            _check_serve_binary(conditional.group("python").strip())
+            return v
         # rest is `[ENV=…] python3 -m llama_cpp.server … || [ENV=…] llama-server …`
         for part in rest.split("||"):
             _check_serve_binary(part.strip())
@@ -1047,6 +1061,14 @@ def _diagnose_serve_output(text: str) -> dict | None:
         return None
     tail = text[-6000:]
     patterns = [
+        (
+            r"\bKilled\b|Process exited with code\s+137|exit code\s+137",
+            "The operating system killed the server after it exhausted system memory.",
+            [
+                {"label": "retry with context 8192", "op": "settings", "field": "ctx", "value": "8192"},
+                {"label": "retry with context 4096", "op": "settings", "field": "ctx", "value": "4096"},
+            ],
+        ),
         (
             r"No available memory for the cache blocks|Available KV cache memory:.*-",
             "No GPU memory left for KV cache after loading model.",

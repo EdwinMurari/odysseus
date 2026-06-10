@@ -3569,7 +3569,11 @@ async function _pollBackgroundStatus() {
         // "stopped" by the backend (its pip package is never in the HF cache the
         // dead-session check inspects). Recover "done" from the retained output's
         // exit-0 sentinel so a clean install isn't downgraded to crashed.
-        const depDone = !!task.payload?._dep && _depInstallSucceeded(task.output);
+        // Combine retained output with the live tail so a dep-install success
+        // marker that only landed in the latest tail (not yet flushed to the
+        // stored output) still counts.
+        const observedOutput = `${task.output || ''}\n${live.output_tail || ''}`;
+        const depDone = !!task.payload?._dep && _depInstallSucceeded(observedOutput);
         // A finished model download whose tmux pane is gone is also reported
         // "stopped" (the dead-session check can miss the landed snapshot).
         // Recover "done" from the terminal `DOWNLOAD_OK` sentinel — emitted

@@ -2921,10 +2921,13 @@ def setup_cookbook_routes() -> APIRouter:
             tmux output can stop at a stale progress line if the pane/session
             disappears before Cookbook captures the final DOWNLOAD_OK marker.
             In that case, trust the cache shape: a snapshot directory with files
-            and no *.incomplete blobs means HuggingFace finished materializing the
-            model. cache_root is the task's custom download dir — the runner
-            pointed HF_HOME there, so the cache lives under <cache_root>/hub,
-            not wherever this probe's environment says.
+            and no unresolved *.incomplete blobs means HuggingFace finished
+            materializing the model. cache_root is the task's custom download
+            dir — the runner pointed HF_HOME there, so the cache lives under
+            <cache_root>/hub, not wherever this probe's environment says.
+            HuggingFace can leave stale retry files such as
+            <hash>.<uuid>.incomplete after the canonical <hash> blob exists;
+            the probe ignores those so they don't force a needless re-download.
             """
             if not repo_id or "/" not in repo_id:
                 return False
@@ -2946,8 +2949,9 @@ def setup_cookbook_routes() -> APIRouter:
             """Best-effort check for resumable HF partial blobs.
 
             A lost SSH/tmux session can leave a real download still incomplete.
-            Treat any *.incomplete blob as stronger evidence than stale
-            "100%" lines in the captured pane output.
+            Treat unresolved *.incomplete blobs as stronger evidence than stale
+            "100%" lines in the captured pane output. Ignore stale retry files
+            when their canonical final blob already exists.
             """
             if not repo_id or "/" not in repo_id:
                 return False
@@ -3171,7 +3175,7 @@ def setup_cookbook_routes() -> APIRouter:
                 elif has_exit and task_type == "download":
                     # Dependency installs are tracked as download tasks but only
                     # emit the generic runner exit marker, not HF download markers.
-                    if download_has_incomplete_evidence and not download_has_ok:
+                    if download_has_incomplete_evidence:
                         status = "running" if is_alive else "stopped"
                     else:
                         status = "completed" if exit_code == 0 else "error"
@@ -3183,6 +3187,8 @@ def setup_cookbook_routes() -> APIRouter:
                     if re.search(r"Fetching\s+0\s+files", full_snapshot, re.IGNORECASE):
                         status = "error"
                         download_zero_files = True
+                    elif download_has_incomplete_evidence:
+                        status = "running" if is_alive else "stopped"
                     else:
                         status = "completed"
                 elif task_type == "download" and download_has_failed:

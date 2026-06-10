@@ -14,6 +14,9 @@ _FETCHING_ZERO_FILES_RE = re.compile(r"Fetching\s+0\s+files", re.IGNORECASE)
 # It has to be passed explicitly: the download runner exports
 # HF_HOME=<local_dir>, so that task's cache lives under <local_dir>/hub, and
 # the probe process's own environment knows nothing about it.
+# A *.incomplete blob only counts as unfinished when its canonical final blob
+# is absent: HuggingFace can leave stale <hash>.<uuid>.incomplete retry files
+# behind after the real <hash> blob exists, and those must not force a redownload.
 HF_CACHE_COMPLETE_PROBE = (
     "import os,sys;"
     "repo=sys.argv[1];"
@@ -24,7 +27,7 @@ HF_CACHE_COMPLETE_PROBE = (
     "ok=os.path.isdir(snap) and any(os.path.isdir(os.path.join(snap,x)) and os.listdir(os.path.join(snap,x)) for x in os.listdir(snap));"
     "inc=False;"
     "blobs=os.path.join(d,'blobs');"
-    "inc=os.path.isdir(blobs) and any(x.endswith('.incomplete') for x in os.listdir(blobs));"
+    "inc=os.path.isdir(blobs) and any(x.endswith('.incomplete') and not os.path.isfile(os.path.join(blobs,x.split('.',1)[0])) for x in os.listdir(blobs));"
     "sys.exit(0 if ok and not inc else 1)"
 )
 
@@ -35,7 +38,7 @@ HF_CACHE_INCOMPLETE_PROBE = (
     "base=os.path.join(root,'hub') if root else (os.environ.get('HUGGINGFACE_HUB_CACHE') or os.path.join(os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface')), 'hub'));"
     "d=os.path.join(base,'models--'+repo.replace('/','--'));"
     "blobs=os.path.join(d,'blobs');"
-    "inc=os.path.isdir(blobs) and any(x.endswith('.incomplete') for x in os.listdir(blobs));"
+    "inc=os.path.isdir(blobs) and any(x.endswith('.incomplete') and not os.path.isfile(os.path.join(blobs,x.split('.',1)[0])) for x in os.listdir(blobs));"
     "sys.exit(0 if inc else 1)"
 )
 

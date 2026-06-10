@@ -624,8 +624,11 @@ export function _buildServeCmd(f, modelName, backend) {
     if (_isWindows()) {
       cmd += _lcpServer;
     } else {
-      cmd += `${lcPrefix}llama-server --model ${modelArg} --host 0.0.0.0 --port ${f.port || '8080'} -ngl ${f.ngl || '99'} -c ${f.ctx || '8192'}${_lcExtra}`;
-      cmd += ` || ${_lcpServer}`;
+      const _nativeServer = `${lcPrefix}llama-server --model ${modelArg} --host 0.0.0.0 --port ${f.port || '8080'} -ngl ${f.ngl || '99'} -c ${f.ctx || '8192'}${_lcExtra}`;
+      // Select the implementation before launch. Falling back after any native
+      // runtime error can start a second model when the real problem is a port
+      // conflict, then turn that conflict into an unrelated host-memory OOM.
+      cmd += `if command -v llama-server >/dev/null 2>&1; then ${_nativeServer}; else ${_lcpServer}; fi`;
     }
   } else if (backend === 'ollama') {
     const ollamaPort = f.port || '11434';

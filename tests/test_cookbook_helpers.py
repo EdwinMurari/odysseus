@@ -548,6 +548,21 @@ def test_validate_serve_cmd_accepts_llama_advanced_controls():
     assert _validate_serve_cmd(cmd) == cmd
 
 
+def test_validate_serve_cmd_accepts_preselected_llama_fallback():
+    cmd = (
+        "MODEL_FILE=$(printf %s ${HOME}'/.cache/huggingface/hub/models--Qwen--Qwen3-GGUF/snapshots/model.gguf') "
+        '&& { [ -n "$MODEL_FILE" ] && [ -f "$MODEL_FILE" ]; } '
+        '|| { echo "ERROR: No GGUF found on this host."; exit 1; } && '
+        "if command -v llama-server >/dev/null 2>&1; then "
+        'CUDA_VISIBLE_DEVICES=0 llama-server --model "$MODEL_FILE" --host 0.0.0.0 --port 8000 -ngl 99 -c 131072; '
+        "else "
+        'CUDA_VISIBLE_DEVICES=0 python3 -m llama_cpp.server --model "$MODEL_FILE" --host 0.0.0.0 --port 8000 '
+        "--n_gpu_layers 99 --n_ctx 131072; fi"
+    )
+
+    assert _validate_serve_cmd(cmd) == cmd
+
+
 def test_validate_serve_cmd_accepts_windows_printf_format():
     cmd = (
         "python -m llama_cpp.server --model "
@@ -906,6 +921,68 @@ def test_cached_model_scan_uses_huggingface_cache_env(tmp_path):
 
     by_repo = {m["repo_id"]: m for m in json.loads(proc.stdout)}
     assert by_repo["Qwen/Qwen3.6-35B"]["path"] == str(hf_cache)
+
+
+def test_cached_model_scan_ignores_stale_incomplete_when_final_blob_exists(tmp_path):
+    hf_cache = tmp_path / "hub"
+    model = hf_cache / "models--acme--serveable-gguf"
+    blobs = model / "blobs"
+    snapshot = model / "snapshots" / "rev"
+    blobs.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
+
+    final_blob = blobs / "abc123"
+    final_blob.write_bytes(b"complete-gguf")
+    (blobs / "abc123.retry.incomplete").write_bytes(b"stale-partial")
+    os.link(final_blob, snapshot / "model-Q4_K_M.gguf")
+
+    scan_py = tmp_path / "scan_cache.py"
+    scan_py.write_text(_cached_model_scan_script(), encoding="utf-8")
+    env = dict(os.environ)
+    env["HUGGINGFACE_HUB_CACHE"] = str(hf_cache)
+    proc = subprocess.run(
+        [sys.executable, str(scan_py)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    by_repo = {m["repo_id"]: m for m in json.loads(proc.stdout)}
+    rec = by_repo["acme/serveable-gguf"]
+    assert rec["has_incomplete"] is False
+    assert rec["is_gguf"] is True
+    assert rec["size_bytes"] == len(b"complete-gguf")
+
+
+def test_cached_model_scan_keeps_unresolved_incomplete_blocked(tmp_path):
+    hf_cache = tmp_path / "hub"
+    model = hf_cache / "models--acme--partial-gguf"
+    blobs = model / "blobs"
+    snapshot = model / "snapshots" / "rev"
+    blobs.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
+
+    (blobs / "missing.retry.incomplete").write_bytes(b"active-partial")
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+
+    scan_py = tmp_path / "scan_cache.py"
+    scan_py.write_text(_cached_model_scan_script(), encoding="utf-8")
+    env = dict(os.environ)
+    env["HUGGINGFACE_HUB_CACHE"] = str(hf_cache)
+    proc = subprocess.run(
+        [sys.executable, str(scan_py)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    by_repo = {m["repo_id"]: m for m in json.loads(proc.stdout)}
+    rec = by_repo["acme/partial-gguf"]
+    assert rec["has_incomplete"] is True
+    assert rec["is_gguf"] is False
+    assert rec["size_bytes"] == len(b"active-partial")
 
 
 # ── #1219 / #1459: keep big dependency wheel builds off the home pip cache ──
