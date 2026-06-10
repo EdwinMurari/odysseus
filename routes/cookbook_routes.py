@@ -1040,6 +1040,68 @@ def setup_cookbook_routes() -> APIRouter:
             return
         logger.debug(f"crash-watchdog: no exit marker for {session_id} within window; leaving endpoint {endpoint_id}")
 
+    def _wire_roles_to_live_endpoint(ep_id: str) -> None:
+        """Make the model roles resolve to a live endpoint after a serve, so the
+        LLM-backed features (AI tidy, auto-sort, built-in actions) work without a
+        manual /setup step.
+
+        The backend registrar is the single source of truth for both the endpoint
+        row AND the role wiring. (The browser used to wire ``default`` as a
+        side-effect of POSTing the endpoint via /api/model-endpoints; once the
+        endpoint already exists at serve time that POST no longer fires, so the
+        wiring has to live here, next to the registration it depends on.)
+
+          * Seed ``default_endpoint_id`` when unset, or heal it when it points at
+            an endpoint that no longer exists — the churn that orphaned roles
+            after a container recreate, a crash-watchdog delete, or a re-serve. A
+            default that still resolves to a live endpoint is left untouched so we
+            never hijack the user's deliberate choice.
+          * Clear any utility/task/research ref that dangles at a missing
+            endpoint so it inherits ``default``. resolve_endpoint() falls back to
+            default for an *empty* sub-role, but a *dangling* one returns nothing.
+
+        ``default_model`` is left empty on purpose: resolve_endpoint() selects the
+        first enabled chat model once the warming server's /v1/models populates,
+        so we don't have to know the model id at serve start.
+        """
+        if not ep_id:
+            return
+        try:
+            from src.settings import load_settings, save_settings
+            from core.database import SessionLocal as _SL, ModelEndpoint as _ME
+        except Exception as e:
+            logger.warning(f"role-wire: import failed: {e!r}")
+            return
+        db = _SL()
+        try:
+            def _is_live(eid: str) -> bool:
+                if not eid:
+                    return False
+                return db.query(_ME).filter(
+                    _ME.id == eid,
+                    _ME.is_enabled == True,
+                ).first() is not None
+
+            settings = load_settings()
+            changed = False
+            if not _is_live((settings.get("default_endpoint_id") or "").strip()):
+                settings["default_endpoint_id"] = ep_id
+                settings["default_model"] = ""
+                changed = True
+            for role in ("utility", "task", "research"):
+                rid = (settings.get(f"{role}_endpoint_id") or "").strip()
+                if rid and not _is_live(rid):
+                    settings[f"{role}_endpoint_id"] = ""
+                    settings[f"{role}_model"] = ""
+                    changed = True
+            if changed:
+                save_settings(settings)
+                logger.info(f"role-wire: model roles now resolve via live endpoint {ep_id}")
+        except Exception as e:
+            logger.warning(f"role-wire: failed to wire roles to {ep_id}: {e!r}")
+        finally:
+            db.close()
+
     def _auto_register_llm_endpoint(req: ServeRequest, remote: str | None) -> str | None:
         """Register a freshly-served LLM as a model endpoint so it appears in the
         model picker without a manual /setup step — the text-model sibling of
@@ -1056,6 +1118,7 @@ def setup_cookbook_routes() -> APIRouter:
             f"remote={remote!r} cmd_prefix={req.cmd[:80]!r}"
         )
         import re
+        import hashlib
         from core.database import SessionLocal, ModelEndpoint
 
         # Port: ordered fallbacks so we match whatever the user actually
@@ -1150,9 +1213,15 @@ def setup_cookbook_routes() -> APIRouter:
                     db.delete(s)
                 if stale:
                     db.commit()
+                _wire_roles_to_live_endpoint(existing.id)
                 return existing.id
 
-            ep_id = f"local-{uuid.uuid4().hex[:8]}"
+            # Deterministic id keyed on the canonical URL: re-serving the same
+            # model (or the crash-watchdog deleting then a re-serve recreating
+            # the row) yields the SAME id, so a role pinned to it survives the
+            # delete→recreate cycle instead of orphaning. Keeps the `local-`
+            # prefix the stale-sweep below filters on.
+            ep_id = f"local-{hashlib.sha1(base_url.encode('utf-8')).hexdigest()[:8]}"
             ep = ModelEndpoint(
                 id=ep_id,
                 name=display_name,
@@ -1196,6 +1265,7 @@ def setup_cookbook_routes() -> APIRouter:
                     logger.info(f"Auto-register: probed {len(probed)} models @ {base_url}")
             except Exception as _pe:
                 logger.warning(f"Auto-register: probe-after-create failed for {base_url}: {_pe!r}")
+            _wire_roles_to_live_endpoint(ep_id)
             return ep_id
         except Exception as e:
             logger.error(f"Failed to auto-register local model endpoint: {e}")

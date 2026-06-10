@@ -3153,13 +3153,13 @@ async function _reconnectTask(el, task) {
           }
           _showDiagnosis(el, diag, snapshot);
         }
-        // Detect serve ready — auto-add to model endpoints. Don't flip
-        // `_endpointAdded` until the POST succeeds; otherwise a transient
-        // error silently prevents any future retry. An in-flight guard
-        // prevents a second poll from firing a duplicate POST before the
-        // first one's dedup check can observe the newly-added row.
-        if (task.type === 'serve' && !task._endpointAdded && !task._endpointAddInFlight && task._serveReady) {
-          task._endpointAddInFlight = true;
+        // Serve became ready. The backend registrar (_auto_register_llm_endpoint)
+        // is the single source of truth for the endpoint row AND the model-role
+        // wiring — it registers at serve START, so by the time the server is
+        // ready the row already exists. The browser no longer POSTs a second,
+        // possibly-divergent row; it finds the backend's endpoint, probes the
+        // warming server until it answers, and selects the freshly-served model.
+        if (task.type === 'serve' && !task._endpointAdded && task._serveReady) {
           let host = _connectHostFromRemote(task.remoteHost);
           const portMatch = task.payload?._cmd?.match(/--port[=\s]+(\d+)/)
             || task.payload?._cmd?.match(/(?:^|\s)-p[=\s]+(\d+)/)
@@ -3174,81 +3174,46 @@ async function _reconnectTask(el, task) {
             const endpoint = _endpointFromAdvertisedUrl(ollamaUrlMatch[1], host, '11434');
             if (endpoint) ({ host, port, baseUrl } = endpoint);
           }
+          const hostPort = `${host}:${port}`;
           fetch('/api/model-endpoints', { credentials: 'same-origin' })
             .then(r => r.json())
             .then(async (eps) => {
-              // Match only exact base_url — don't dedup by friendly name,
-              // because other endpoints may happen to share a model name.
-              const exists = eps.some(e => e.base_url === baseUrl);
-              if (exists) {
-                // Already registered — e.g. the backend pre-registers diffusion
-                // endpoints server-side. Mark so we don't retry, but STILL
-                // refresh the picker (and probe until online) so the new model
-                // shows up without the user having to manually refresh.
-                task._endpointAdded = true;
-                _updateTask(task.sessionId, { _endpointAdded: true });
-                _autoSaveWorkingConfig(task);   // endpoint live → remember these settings
-                if (window.modelsModule?.refreshModels) await window.modelsModule.refreshModels(true);
-                if (window.sessionModule?.updateModelPicker) window.sessionModule.updateModelPicker();
-                window.dispatchEvent(new CustomEvent('ge:model-endpoints-updated', { detail: { baseUrl, host, port, model: task.name } }));
-                const _ex = eps.find(e => e.base_url === baseUrl);
-                if (_ex && _ex.id && !(_ex.models || []).length) _probeEndpointUntilOnline(_ex.id, host, port);
-                return null;
+              const ep = eps.find(e => e.base_url === baseUrl)
+                || eps.find(e => (e.base_url || '').includes(hostPort))
+                || eps.find(e => e.name === task.name);
+              if (!ep) {
+                // Backend hasn't registered it yet (or couldn't detect the
+                // port). Leave _endpointAdded false so a later poll retries;
+                // the user can also force it via ⋮ → Register endpoint.
+                return;
               }
-              const _isDiffusion = task.payload?._cmd?.includes('diffusion_server');
-              const fd = new FormData();
-              fd.append('base_url', baseUrl);
-              fd.append('name', task.name);
-              fd.append('skip_probe', 'true');
-              _appendCookbookEndpointScope(fd, task.remoteHost || '');
-              if (_isDiffusion) fd.append('model_type', 'image');
-              return fetch('/api/model-endpoints', { method: 'POST', credentials: 'same-origin', body: fd });
-            })
-            .then(async (res) => {
-              if (res && res.ok) {
-                // Flip the flag only on confirmed success
-                task._endpointAdded = true;
-                _updateTask(task.sessionId, { _endpointAdded: true });
-                _autoSaveWorkingConfig(task);   // endpoint live → remember these settings
-                uiModule.showToast(`Model endpoint added: ${host}:${port}`);
-                // Retry-probe until the warming server answers, so it
-                // flips online without a manual enable/disable toggle.
-                const _epData = await res.json().catch(() => ({}));
-                if (_epData && _epData.id && !(_epData.models || []).length) {
-                  _probeEndpointUntilOnline(_epData.id, host, port);
-                }
-                window.dispatchEvent(new CustomEvent('ge:model-endpoints-updated', { detail: { baseUrl, host, port, model: task.name } }));
-                const _trySelectModel = async (attempt) => {
-                  if (window.modelsModule?.refreshModels) await window.modelsModule.refreshModels(true);
-                  const items = window.modelsModule?.getCachedItems?.() || [];
-                  for (const item of items) {
-                    if (item.offline) continue;
-                    const url = item.url || '';
-                    if (url.includes(host) || url.includes(port)) {
-                      const mid = (item.models || [])[0];
-                      if (mid && window.sessionModule?.createDirectChat) {
-                        window.sessionModule.createDirectChat(url, mid, item.endpoint_id);
-                        if (window.sessionModule?.updateModelPicker) window.sessionModule.updateModelPicker();
-                        uiModule.showToast(`Switched to ${mid.split('/').pop()}`);
-                        return;
-                      }
+              task._endpointAdded = true;
+              _updateTask(task.sessionId, { _endpointAdded: true });
+              _autoSaveWorkingConfig(task);   // endpoint live → remember these settings
+              if (ep.id && !(ep.models || []).length) _probeEndpointUntilOnline(ep.id, host, port);
+              window.dispatchEvent(new CustomEvent('ge:model-endpoints-updated', { detail: { baseUrl, host, port, model: task.name } }));
+              const _trySelectModel = async (attempt) => {
+                if (window.modelsModule?.refreshModels) await window.modelsModule.refreshModels(true);
+                const items = window.modelsModule?.getCachedItems?.() || [];
+                for (const item of items) {
+                  if (item.offline) continue;
+                  const url = item.url || '';
+                  if (url.includes(host) || url.includes(port)) {
+                    const mid = (item.models || [])[0];
+                    if (mid && window.sessionModule?.createDirectChat) {
+                      window.sessionModule.createDirectChat(url, mid, item.endpoint_id);
+                      if (window.sessionModule?.updateModelPicker) window.sessionModule.updateModelPicker();
+                      uiModule.showToast(`Switched to ${mid.split('/').pop()}`);
+                      return;
                     }
                   }
-                  if (attempt < 3) setTimeout(() => _trySelectModel(attempt + 1), 2000);
-                  else if (window.sessionModule?.updateModelPicker) window.sessionModule.updateModelPicker();
-                };
-                setTimeout(() => _trySelectModel(0), 1000);
-              } else if (res && !res.ok) {
-                const body = await res.text().catch(() => '');
-                console.warn('Endpoint auto-add failed', res.status, body);
-                uiModule.showError(`Auto-register endpoint failed (${res.status}). Use ⋮ → Register endpoint to retry.`);
-              }
+                }
+                if (attempt < 3) setTimeout(() => _trySelectModel(attempt + 1), 2000);
+                else if (window.sessionModule?.updateModelPicker) window.sessionModule.updateModelPicker();
+              };
+              setTimeout(() => _trySelectModel(0), 1000);
             })
-            .catch((e) => {
-              console.warn('Endpoint auto-add error', e);
-              uiModule.showError(`Auto-register endpoint error: ${e.message || e}. Use ⋮ → Register endpoint to retry.`);
-            })
-            .finally(() => { task._endpointAddInFlight = false; });
+            .catch((e) => { console.warn('Endpoint refresh error', e); });
           _updateTask(task.sessionId, { status: 'running' });
           const badge = el.querySelector('.cookbook-task-status');
           if (badge) { badge.textContent = 'running'; badge.className = 'cookbook-task-status cookbook-task-running'; }
@@ -3667,7 +3632,10 @@ async function _pollBackgroundStatus() {
     const errorTasks = tasks.filter(t => t.status === 'error');
     const completedTasks = tasks.filter(t => t.status === 'completed');
 
-    // Auto-add serve endpoints that became ready (works even when modal is closed)
+    // A serve became ready (this runs even when the modal is closed). The
+    // backend already registered the endpoint at serve start and wired the
+    // model roles; the browser just refreshes the picker and probes the warming
+    // server until it answers. It does NOT create a second endpoint row.
     const readyServes = tasks.filter(t => t.type === 'serve' && t.status === 'ready');
     for (const t of readyServes) {
       const localTasks = _loadTasks();
@@ -3685,51 +3653,20 @@ async function _pollBackgroundStatus() {
         const endpoint = _endpointFromAdvertisedUrl(ollamaUrlMatch[1], host, '11434');
         if (endpoint) ({ host, port, baseUrl } = endpoint);
       }
-      const _isDiffusion = localTask?.payload?._cmd?.includes('diffusion_server');
+      const hostPort = `${host}:${port}`;
 
-      _updateTask(t.session_id, { _serveReady: true, _endpointAdded: true });
-      if (localTask) _autoSaveWorkingConfig(localTask);   // remember working settings (modal may be closed)
-
-      // Auto-detect function-calling support from the serve cmd.
-      // vLLM emits OpenAI-style tool_calls only when launched with
-      // `--enable-auto-tool-choice`; local-only models otherwise
-      // hallucinate a fake [TOOL_CALL]...[/TOOL_CALL] text format
-      // the backend can't parse.
-      const _cmd = localTask?.payload?._cmd || '';
-      const _supportsTools = _cmd.includes('--enable-auto-tool-choice') || _isDiffusion === false && /(?:^|\s)(?:deepseek|gpt-[45o]|claude|gemini|qwen3|qwen2\.5|mixtral|llama-[34]|minimax|kimi|hermes|glm-4)/i.test(t.model);
+      _updateTask(t.session_id, { _serveReady: true });
 
       fetch('/api/model-endpoints', { credentials: 'same-origin' })
         .then(r => r.json())
-        .then(eps => {
-          const hostPort = `${host}:${port}`;
-          const existing = eps.find(e => e.base_url === baseUrl || e.base_url.includes(hostPort) || e.name === t.model);
-          if (existing) {
-            // Already registered — but it may be showing offline because
-            // it was added while the server was still warming. Kick a
-            // re-probe so it flips online without manual toggle.
-            if (!(existing.models || []).length) _probeEndpointUntilOnline(existing.id, host, port);
-            return null;
-          }
-          const fd = new FormData();
-          fd.append('base_url', baseUrl);
-          fd.append('name', t.model);
-          fd.append('skip_probe', 'true');
-          _appendCookbookEndpointScope(fd, localTask?.remoteHost || t.remote || '');
-          if (_isDiffusion) fd.append('model_type', 'image');
-          if (_supportsTools) fd.append('supports_tools', 'true');
-          return fetch('/api/model-endpoints', { method: 'POST', credentials: 'same-origin', body: fd });
-        })
-        .then(async (res) => {
-          if (res && res.ok) {
-            uiModule.showToast(`Model endpoint added: ${host}:${port}`);
-            const data = await res.json().catch(() => ({}));
-            // A just-started server often can't answer the 1s add-time
-            // probe, so it lands "offline". Retry-probe in the background
-            // until /v1/models responds — no manual enable/disable needed.
-            if (data && data.id) _probeEndpointUntilOnline(data.id, host, port);
-            if (window.modelsModule?.refreshModels) await window.modelsModule.refreshModels(true);
-            if (window.sessionModule?.updateModelPicker) window.sessionModule.updateModelPicker();
-          }
+        .then(async (eps) => {
+          const existing = eps.find(e => e.base_url === baseUrl || (e.base_url || '').includes(hostPort) || e.name === t.model);
+          if (!existing) return;   // backend will register on a later poll
+          _updateTask(t.session_id, { _endpointAdded: true });
+          if (localTask) _autoSaveWorkingConfig(localTask);   // remember working settings (modal may be closed)
+          if (!(existing.models || []).length) _probeEndpointUntilOnline(existing.id, host, port);
+          if (window.modelsModule?.refreshModels) await window.modelsModule.refreshModels(true);
+          if (window.sessionModule?.updateModelPicker) window.sessionModule.updateModelPicker();
         })
         .catch(() => {});
     }
