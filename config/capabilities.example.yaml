@@ -1,0 +1,105 @@
+version: 1
+
+# Copy this file to data/capabilities.yaml. In Docker, HTTP capabilities are
+# recommended because each task engine keeps its own dependencies and runtime.
+model_roles:
+  painminer.tag:
+    setting_prefix: utility
+    capabilities: [pain-miner]
+    max_tokens: 2048
+  painminer.cluster:
+    setting_prefix: default
+    capabilities: [pain-miner]
+    max_tokens: 8192
+
+capabilities:
+  - id: pain-miner
+    name: Pain Miner
+    description: Build the weekly paid-pain digest.
+    version: "1"
+    implementation: painminer.pipeline
+    enabled: true
+    admin_only: true
+    timeout_seconds: 1800
+    import_report: true
+    triggers: [manual, schedule]
+    presentation:
+      icon: radar
+      category: Market Intelligence
+      short_description: Find recurring, monetizable customer pain from live evidence.
+      documentation_url: /docs/capabilities#pain-miner
+    dependencies:
+      - id: apify
+        label: Apify sources
+        kind: integration
+        probe: worker
+        env: APIFY_TOKEN
+        required: false
+        input: sources
+        values: [reddit, g2]
+        required_when_selected: true
+        missing_message: Reddit and G2 collection are unavailable.
+    progress_phases: [collect, tag, cluster, report]
+    idempotent: true
+    transport:
+      type: http
+      base_url: http://pain-miner-capability:8080
+      token_env: PAIN_MINER_CAPABILITY_TOKEN
+    inputs:
+      since:
+        type: string
+        label: Lookback
+        group: Evidence
+        description: Lookback window accepted by painminer, such as 7d.
+        default: 7d
+      sources:
+        type: string
+        label: Sources
+        group: Evidence
+        description: Comma-separated subset of hn, reddit, austender, and g2.
+        default: hn,reddit,austender,g2
+      report:
+        type: string
+        label: Report path
+        group: Output
+        advanced: true
+        description: Worker-local Markdown path under /data/reports.
+        default: /data/reports/pain-miner.md
+      refresh:
+        type: boolean
+        label: Refresh sources
+        group: Evidence
+        description: Refresh external sources before analysis.
+        default: true
+      max_items:
+        type: integer
+        label: Maximum items
+        group: Advanced
+        advanced: true
+        minimum: 1
+        description: Optional cap used for source collection and tagging.
+
+  # Trusted native-install example. Commands are argv arrays, never shell text.
+  # This mode is not recommended inside the Odysseus container because every
+  # repository would have to share that container's dependency environment.
+  - id: example-native-report
+    name: Example Native Report
+    description: Demonstrates the process transport for non-Docker installs.
+    admin_only: true
+    timeout_seconds: 600
+    import_report: true
+    transport:
+      type: process
+      cwd: /absolute/path/to/example-repo
+      command: ["/absolute/path/to/example-repo/.venv/bin/example", "report"]
+      pass_env: ["EXAMPLE_API_KEY"]
+    inputs:
+      watchlist:
+        type: string
+        flag: --watchlist
+        required: true
+        description: Named watchlist to analyse.
+      include_news:
+        type: boolean
+        flag: --include-news
+        default: true
