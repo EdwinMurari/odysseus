@@ -211,6 +211,9 @@ if AUTH_ENABLED:
         "/api/auth/integrations/presets",
         "/api/health",
         "/api/version",
+        # Authenticated independently by a scoped capability-worker bearer
+        # token, then authorized against an active durable capability run.
+        "/api/capability-models/structured",
         "/login",
     }
     AUTH_EXEMPT_PREFIXES = ["/static"]
@@ -682,6 +685,20 @@ app.include_router(setup_gallery_routes())
 from routes.editor_draft_routes import setup_editor_draft_routes
 app.include_router(setup_editor_draft_routes())
 
+# Manifest-defined external capabilities
+from src.capability_runner import CapabilityManager, set_capability_manager
+capability_manager = CapabilityManager()
+set_capability_manager(capability_manager)
+from routes.capability_routes import setup_capability_routes
+app.include_router(setup_capability_routes(capability_manager))
+from routes.capability_model_routes import setup_capability_model_routes
+app.include_router(
+    setup_capability_model_routes(
+        capability_manager,
+        os.environ.get("ODYSSEUS_CAPABILITY_MODEL_TOKEN", ""),
+    )
+)
+
 # Scheduled tasks + event bus
 from src.task_scheduler import TaskScheduler
 task_scheduler = TaskScheduler(session_manager)
@@ -935,6 +952,7 @@ async def _startup_event():
     # GC tasks created with `asyncio.create_task(...)` before they finish.
     _startup_tasks: list[asyncio.Task] = getattr(app.state, "_startup_tasks", [])
     app.state._startup_tasks = _startup_tasks
+    await capability_manager.start()
     if upload_cleanup_func:
         upload_cleanup_task = asyncio.create_task(upload_cleanup_func())
     # Always-on monitor that auto-continues the agent when a background bash
@@ -1160,6 +1178,10 @@ async def _shutdown_event():
     # Stop task scheduler (no-op if it never started under the gate)
     try:
         await task_scheduler.stop()
+    except Exception:
+        pass
+    try:
+        await capability_manager.stop()
     except Exception:
         pass
     # Close webhook manager

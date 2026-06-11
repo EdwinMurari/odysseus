@@ -235,6 +235,9 @@ class Document(TimestampMixin, Base):
     source_email_folder      = Column(String, nullable=True)
     source_email_account_id  = Column(String, nullable=True)
     source_email_message_id  = Column(String, nullable=True, index=True)
+    source_capability_id     = Column(String, nullable=True, index=True)
+    source_capability_run_id = Column(String, nullable=True, index=True)
+    source_task_id           = Column(String, nullable=True, index=True)
 
     session  = relationship("Session", backref=backref("documents", cascade="save-update, merge"))
     versions = relationship("DocumentVersion", back_populates="document",
@@ -575,7 +578,7 @@ class ScheduledTask(TimestampMixin, Base):
     owner          = Column(String, nullable=True, index=True)
     name           = Column(String, nullable=False, default="Untitled Task")
     prompt         = Column(Text, nullable=True)              # LLM prompt (for task_type="llm")
-    task_type      = Column(String, default="llm")            # "llm" | "action"
+    task_type      = Column(String, default="llm")            # "llm" | "action" | "research" | "capability"
     action         = Column(String, nullable=True)            # builtin action name (for task_type="action")
     schedule       = Column(String, nullable=True)            # "once", "daily", "weekly", "monthly"
     scheduled_time = Column(String, nullable=True)            # "HH:MM" (24h, stored UTC)
@@ -605,6 +608,8 @@ class ScheduledTask(TimestampMixin, Base):
     max_steps      = Column(Integer, nullable=True)       # max agent loop iterations (null=unlimited)
     email_results  = Column(Boolean, default=True)        # email results to character.email_to
     notifications_enabled = Column(Boolean, default=True) # per-task on/off for completion notifications
+    capability_id = Column(String, nullable=True)          # manifest capability id for task_type="capability"
+    capability_input = Column(Text, nullable=True)         # validated JSON object passed to the capability
 
     session = relationship("Session", backref=backref("scheduled_tasks", cascade="save-update, merge"))
     then_task = relationship("ScheduledTask", remote_side=[id], foreign_keys=[then_task_id])
@@ -668,6 +673,65 @@ class TaskRun(Base):
     __table_args__ = (
         Index('ix_task_runs_task', 'task_id', 'started_at'),
     )
+
+
+class CapabilityRun(Base):
+    """Durable record of a manifest-defined capability invocation."""
+    __tablename__ = "capability_runs"
+
+    id                = Column(String, primary_key=True, index=True)
+    owner             = Column(String, nullable=True, index=True)
+    capability_id     = Column(String, nullable=False, index=True)
+    transport         = Column(String, nullable=False)
+    status            = Column(String, nullable=False, default="queued", index=True)
+    input_json        = Column(Text, nullable=False, default="{}")
+    result_json       = Column(Text, nullable=True)
+    summary           = Column(Text, nullable=True)
+    error             = Column(Text, nullable=True)
+    log_path          = Column(Text, nullable=True)
+    report_path       = Column(Text, nullable=True)
+    document_id       = Column(String, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    provider_run_id   = Column(String, nullable=True)
+    worker_pid        = Column(Integer, nullable=True)
+    scheduled_task_id = Column(String, ForeignKey("scheduled_tasks.id", ondelete="SET NULL"), nullable=True)
+    task_run_id       = Column(String, ForeignKey("task_runs.id", ondelete="SET NULL"), nullable=True)
+    started_at        = Column(DateTime, nullable=False, default=utcnow_naive)
+    finished_at       = Column(DateTime, nullable=True)
+    created_at        = Column(DateTime, nullable=False, default=utcnow_naive)
+
+    document = relationship("Document")
+
+    __table_args__ = (
+        Index('ix_capability_runs_owner_started', 'owner', 'started_at'),
+        Index('ix_capability_runs_task_run', 'task_run_id'),
+    )
+
+
+class CapabilityPreference(TimestampMixin, Base):
+    """Owner-scoped, browser-safe defaults for a registered capability."""
+    __tablename__ = "capability_preferences"
+
+    id            = Column(String, primary_key=True, index=True)
+    owner         = Column(String, nullable=True, index=True)
+    capability_id = Column(String, nullable=False, index=True)
+    values_json   = Column(Text, nullable=False, default="{}")
+
+    __table_args__ = (
+        Index(
+            "ix_capability_preferences_owner_capability",
+            "owner",
+            "capability_id",
+            unique=True,
+        ),
+    )
+
+
+class CapabilityAdminState(TimestampMixin, Base):
+    """Operator overrides that do not mutate the capability registry file."""
+    __tablename__ = "capability_admin_states"
+
+    capability_id = Column(String, primary_key=True, index=True)
+    enabled = Column(Boolean, nullable=False, default=True)
 
 
 class Memory(Base):
@@ -1515,11 +1579,13 @@ def _migrate_add_mcp_oauth_tokens_column():
         logging.getLogger(__name__).warning(f"oauth_tokens migration: {e}")
 
 def _migrate_add_task_v2_columns():
-    """Add cron_expression, then_task_id, webhook_token to scheduled_tasks."""
+    """Add optional automation fields to scheduled_tasks."""
     new_cols = {
         "cron_expression": "VARCHAR",
         "then_task_id": "VARCHAR",
         "webhook_token": "VARCHAR",
+        "capability_id": "VARCHAR",
+        "capability_input": "TEXT",
     }
     try:
         with engine.connect() as conn:
@@ -1533,6 +1599,32 @@ def _migrate_add_task_v2_columns():
             logging.getLogger(__name__).info("Task v2 columns migration complete")
     except Exception as e:
         logging.getLogger(__name__).warning(f"task v2 migration: {e}")
+
+def _migrate_add_document_capability_columns():
+    """Add stable capability provenance to imported report documents."""
+    new_cols = {
+        "source_capability_id": "VARCHAR",
+        "source_capability_run_id": "VARCHAR",
+        "source_task_id": "VARCHAR",
+    }
+    try:
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(documents)"))]
+            for col_name, col_def in new_cols.items():
+                if col_name not in cols:
+                    conn.execute(text(
+                        f"ALTER TABLE documents ADD COLUMN {col_name} {col_def}"
+                    ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_documents_source_capability "
+                "ON documents(source_capability_id, source_capability_run_id)"
+            ))
+            conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            f"document capability columns migration: {e}"
+        )
+
 
 def _migrate_drop_ping_notes_tasks():
     """One-time cleanup: ping_notes and ping_events used to be seeded as
@@ -1822,6 +1914,7 @@ def init_db():
     _migrate_add_disabled_tools()
     _migrate_add_mcp_oauth_tokens_column()
     _migrate_add_task_v2_columns()
+    _migrate_add_document_capability_columns()
     _migrate_add_notifications_enabled()
     _migrate_drop_ping_notes_tasks()
     _migrate_add_crew_member_id()

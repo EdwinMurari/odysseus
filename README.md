@@ -47,6 +47,7 @@ Native installs, GPU notes, Windows/macOS instructions, HTTPS, and configuration
 - **Documents** — writing-first editor with AI edits, suggestions, Markdown, HTML, CSV, and syntax highlighting.
 - **Email** — IMAP/SMTP inbox with triage, tags, summaries, reminders, and reply drafts.
 - **Notes, Tasks + Calendar** — reminders, todos, scheduled agent tasks, and CalDAV sync.
+- **External Capabilities** — run repository-backed task engines in isolated Docker workers and import their reports. See [External capabilities](docs/capabilities.md).
 - **Extras** — gallery/image editor, themes, uploads, web search, presets, sessions, and 2FA.
 
 ## Demo

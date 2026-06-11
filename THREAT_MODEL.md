@@ -28,6 +28,7 @@ Odysseus is designed for **trusted users on a private network**, not public expo
 | Calendar management | ✓ | ✗ |
 | Token / webhook management | ✓ | ✗ |
 | Model serving | ✓ | ✗ |
+| External capabilities | ✓ | Manifest-controlled |
 | Vault | ✓ | ✗ |
 | Settings | ✓ | ✗ |
 
@@ -50,6 +51,17 @@ Agent tool calls reach admin-gated HTTP routes over an in-process HTTP loopback.
 3. `require_admin` recognises either signal and grants access without checking the session user.
 
 The agent may be running in a non-admin user's session, but tool dispatch first calls `src/tool_security.py:owner_is_admin_or_single_user` to verify the session owner is an admin before issuing any loopback call. Non-admin users cannot invoke admin tools even via the agent.
+
+## External Capability Workers
+
+Capability definitions are administrator-controlled configuration, not
+user-supplied commands. The native process transport executes a fixed argv
+array without a shell, validates typed inputs, confines file report imports to
+the configured working directory, and passes only allowlisted environment
+variables. Docker deployments should use authenticated HTTP workers on the
+private Compose network so each repository has an isolated dependency and
+secret boundary. Odysseus does not mount the Docker socket and capability
+workers do not publish host ports by default.
 
 ## Prompt-Injection Hardening
 
