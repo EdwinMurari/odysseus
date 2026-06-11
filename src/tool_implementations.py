@@ -410,6 +410,7 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                     "id": t.id, "name": t.name, "status": t.status,
                     "task_type": t.task_type or "llm",
                     "action": t.action,
+                    "capability_id": getattr(t, "capability_id", None),
                     "trigger_type": t.trigger_type or "schedule",
                     "schedule": t.schedule,
                     "trigger_event": t.trigger_event,
@@ -428,6 +429,31 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                 return {"error": "Prompt is required for llm/research tasks", "exit_code": 1}
             if task_type == "action" and not args.get("action_name"):
                 return {"error": "action_name is required for action tasks", "exit_code": 1}
+            capability_values = None
+            capability_definition = None
+            if task_type == "capability":
+                from src.tool_security import owner_is_admin_or_single_user
+                from src.capabilities import CapabilityConfigError
+                from src.capability_runner import get_capability_manager
+                capability_id = str(args.get("capability_id") or "")
+                if not capability_id:
+                    return {"error": "capability_id is required for capability tasks", "exit_code": 1}
+                try:
+                    capability_definition = get_capability_manager().get_definition(
+                        capability_id
+                    )
+                    capability_values = capability_definition.validate_input(
+                        args.get("capability_input") or {}
+                    )
+                except KeyError:
+                    return {"error": "Capability not found", "exit_code": 1}
+                except CapabilityConfigError as exc:
+                    return {"error": str(exc), "exit_code": 1}
+                if (
+                    capability_definition.admin_only
+                    and not owner_is_admin_or_single_user(owner)
+                ):
+                    return {"error": "This capability requires an admin user", "exit_code": 1}
 
             # Compute next_run for schedule triggers
             next_run = None
@@ -441,7 +467,15 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
             task_id = str(_uuid.uuid4())
             # Guard each fallback with `or`: args.get("prompt", default) returns
             # None when the key is present but null, and None[:50] raises.
-            name = args.get("name") or (args.get("prompt") or args.get("action_name") or "Task")[:50]
+            name = args.get("name") or (
+                args.get("prompt")
+                or args.get("action_name")
+                or (
+                    capability_definition.name
+                    if capability_definition
+                    else "Task"
+                )
+            )[:50]
 
             task = ScheduledTask(
                 id=task_id,
@@ -450,6 +484,12 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
                 prompt=args.get("prompt"),
                 task_type=task_type,
                 action=args.get("action_name"),
+                capability_id=args.get("capability_id"),
+                capability_input=(
+                    json.dumps(capability_values, separators=(",", ":"), sort_keys=True)
+                    if capability_values is not None
+                    else None
+                ),
                 schedule=args.get("schedule") if trigger_type == "schedule" else None,
                 scheduled_time=args.get("scheduled_time", "09:00") if trigger_type == "schedule" else None,
                 scheduled_day=args.get("scheduled_day"),
@@ -486,6 +526,29 @@ async def do_manage_tasks(content: str, owner: Optional[str] = None) -> Dict:
             if args.get("action_name") is not None:
                 task.action = args["action_name"]
                 changed.append("action")
+            if args.get("capability_id") is not None or args.get("capability_input") is not None:
+                from src.tool_security import owner_is_admin_or_single_user
+                from src.capabilities import CapabilityConfigError
+                from src.capability_runner import get_capability_manager
+                capability_id = args.get("capability_id") or getattr(task, "capability_id", None)
+                try:
+                    definition = get_capability_manager().get_definition(capability_id)
+                    values = definition.validate_input(
+                        args.get("capability_input")
+                        if args.get("capability_input") is not None
+                        else json.loads(getattr(task, "capability_input", None) or "{}")
+                    )
+                except KeyError:
+                    return {"error": "Capability not found", "exit_code": 1}
+                except CapabilityConfigError as exc:
+                    return {"error": str(exc), "exit_code": 1}
+                if definition.admin_only and not owner_is_admin_or_single_user(owner):
+                    return {"error": "This capability requires an admin user", "exit_code": 1}
+                task.capability_id = capability_id
+                task.capability_input = json.dumps(
+                    values, separators=(",", ":"), sort_keys=True
+                )
+                changed.extend(["capability_id", "capability_input"])
             if args.get("trigger_type") is not None:
                 task.trigger_type = args["trigger_type"]
                 changed.append("trigger_type")

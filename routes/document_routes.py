@@ -269,6 +269,7 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
         offset: int = Query(0, ge=0),
         limit: int = Query(20, ge=1, le=50),
         archived: bool = Query(False),
+        capability_id: Optional[str] = Query(None),
     ) -> Dict[str, Any]:
         user = get_current_user(request)
         db = SessionLocal()
@@ -296,6 +297,10 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 .filter(Document.is_active == True).filter(_arch_cond)
             )
             lang_q = _owner_session_filter(lang_q, user)
+            if capability_id:
+                lang_q = lang_q.filter(
+                    Document.source_capability_id == capability_id
+                )
             lang_rows = lang_q.group_by(library_language_expr).all()
             languages = _aggregate_language_facets(lang_rows)
 
@@ -306,6 +311,10 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 .filter(Document.is_active == True).filter(_arch_cond)
             )
             sc_q = _owner_session_filter(sc_q, user)
+            if capability_id:
+                sc_q = sc_q.filter(
+                    Document.source_capability_id == capability_id
+                )
             session_count = sc_q.scalar()
 
             # Base query
@@ -315,6 +324,8 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                 .filter(Document.is_active == True).filter(_arch_cond)
             )
             q = _owner_session_filter(q, user)
+            if capability_id:
+                q = q.filter(Document.source_capability_id == capability_id)
 
             # Search filter — split on whitespace and require EACH term to
             # match (title OR content). A single `%foo bar%` LIKE only matched
@@ -365,6 +376,9 @@ def setup_document_routes(session_manager, upload_handler=None) -> APIRouter:
                     "language": _library_language_for_document(doc),
                     "preview": (doc.current_content or "")[:500],
                     "version_count": doc.version_count,
+                    "source_capability_id": doc.source_capability_id,
+                    "source_capability_run_id": doc.source_capability_run_id,
+                    "source_task_id": doc.source_task_id,
                     "created_at": (doc.created_at.isoformat() + "Z") if doc.created_at else None,
                     "updated_at": (doc.updated_at.isoformat() + "Z") if doc.updated_at else None,
                 })

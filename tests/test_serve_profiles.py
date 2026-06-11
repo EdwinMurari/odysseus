@@ -24,8 +24,14 @@ _DENSE_8B = {
 }
 
 
-def _sys(vram, family="rdna"):
-    return {"backend": "rocm", "gpu_vram_gb": vram, "gpu_family": family}
+def _sys(vram, family="rdna", available_ram=64.0):
+    return {
+        "backend": "rocm",
+        "gpu_vram_gb": vram,
+        "gpu_family": family,
+        "available_ram_gb": available_ram,
+        "total_ram_gb": available_ram,
+    }
 
 
 def test_big_moe_on_small_card_offloads_not_fails():
@@ -120,3 +126,46 @@ def test_serve_mode_keeps_fixed_quant():
     assert len(kvs) > 1 or len(ctxs) > 1, "serve profiles are identical"
     # All must fit the card.
     assert all(p["est_vram_gb"] <= 16.0 for p in profs)
+
+
+def test_profiles_shrink_context_to_fit_available_host_ram():
+    """KV may be allocated in system RAM even with GPU layer offload.
+
+    A profile must not offer a context whose KV allocation can trigger SIGKILL
+    137 on a host with less available RAM than the cache requires.
+    """
+    model = {
+        "name": "Wide-MoE",
+        "parameter_count": "35B",
+        "is_moe": True,
+        "active_parameters": 3_000_000_000,
+        "num_hidden_layers": 48,
+        "context_length": 131072,
+    }
+    profs = compute_serve_profiles(
+        _sys(24.0, available_ram=16.0),
+        model,
+        serve_weights_gb=20.0,
+        serve_quant="Q4_K_M",
+    )
+
+    assert profs
+    assert all(p["ctx"] < 131072 for p in profs), profs
+    assert all(p["est_host_ram_gb"] <= p["host_ram_budget_gb"] for p in profs)
+
+
+def test_kv_estimate_uses_attention_shape_when_available():
+    model = {
+        "name": "Attention-Shaped",
+        "parameter_count": "32B",
+        "num_hidden_layers": 64,
+        "hidden_size": 5120,
+        "num_attention_heads": 40,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+    }
+    profs = compute_serve_profiles(_sys(48.0), model)
+    quality = next(p for p in profs if p["key"] == "quality")
+
+    # 2 (K+V) * 64 layers * 8 KV heads * 128 dim * q8 bytes * 131072 tokens.
+    assert 17.0 <= quality["est_kv_gb"] <= 18.0

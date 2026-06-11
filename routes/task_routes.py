@@ -137,8 +137,10 @@ def _maybe_cascade_calendar_event(task) -> None:
 class TaskCreate(BaseModel):
     name: Optional[str] = None
     prompt: Optional[str] = None
-    task_type: str = "llm"                        # "llm" | "action" | "research"
+    task_type: str = "llm"                        # "llm" | "action" | "research" | "capability"
     action: Optional[str] = None                  # builtin action name
+    capability_id: Optional[str] = None
+    capability_input: Optional[Dict[str, Any]] = None
     schedule: Optional[str] = None                # "once" | "daily" | "weekly" | "monthly" | "cron"
     scheduled_time: str = "09:00"                 # HH:MM
     scheduled_day: Optional[int] = None           # day-of-week (0=Mon) or day-of-month
@@ -160,6 +162,8 @@ class TaskUpdate(BaseModel):
     prompt: Optional[str] = None
     task_type: Optional[str] = None
     action: Optional[str] = None
+    capability_id: Optional[str] = None
+    capability_input: Optional[Dict[str, Any]] = None
     schedule: Optional[str] = None
     scheduled_time: Optional[str] = None
     scheduled_day: Optional[int] = None
@@ -183,6 +187,14 @@ def _display_task_name(t: ScheduledTask) -> str:
     return t.name
 
 
+def _capability_input(t: ScheduledTask) -> dict:
+    try:
+        value = json.loads(getattr(t, "capability_input", None) or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _task_to_dict(t: ScheduledTask, include_last_run_result: bool = False) -> dict:
     defs = HOUSEKEEPING_DEFAULTS.get(t.action) if t.action else None
     d = {
@@ -191,6 +203,8 @@ def _task_to_dict(t: ScheduledTask, include_last_run_result: bool = False) -> di
         "prompt": t.prompt,
         "task_type": t.task_type or "llm",
         "action": t.action,
+        "capability_id": getattr(t, "capability_id", None),
+        "capability_input": _capability_input(t),
         "schedule": t.schedule,
         "scheduled_time": t.scheduled_time,
         "scheduled_day": t.scheduled_day,
@@ -423,22 +437,13 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     _ADMIN_ONLY_ACTIONS = {"run_local", "run_script", "ssh_command"}
 
     def _is_admin(user: str | None) -> bool:
-        if not user:
-            return False
         # In-process tool-loopback marker — AuthMiddleware validated
         # the internal token + loopback client before stamping this,
         # so treat as admin-equivalent.
         if user == INTERNAL_TOOL_USER:
             return True
-        try:
-            from core.auth import AuthManager
-            auth = AuthManager()
-            if not auth.is_configured:
-                # Unconfigured single-user deploy: trust the local owner.
-                return True
-            return bool(auth.is_admin(user))
-        except Exception:
-            return False
+        from src.tool_security import owner_is_admin_or_single_user
+        return owner_is_admin_or_single_user(user)
 
     def _validate_then_task_id(db, then_task_id: Optional[str], user: Optional[str], current_task_id: Optional[str] = None) -> Optional[str]:
         target_id = (then_task_id or "").strip()
@@ -463,6 +468,32 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             raise HTTPException(400, "Prompt is required for LLM/research tasks")
         if req.task_type == "action" and not req.action:
             raise HTTPException(400, "Action name is required for action tasks")
+        if req.task_type == "capability" and not req.capability_id:
+            raise HTTPException(400, "Capability id is required for capability tasks")
+        capability_definition = None
+        capability_values = None
+        if req.task_type == "capability":
+            from src.capability_runner import get_capability_manager
+            from src.capabilities import CapabilityConfigError
+            manager = get_capability_manager()
+            try:
+                capability_definition = manager.get_definition(req.capability_id or "")
+                capability_values = capability_definition.validate_input(
+                    req.capability_input or {}
+                )
+            except KeyError:
+                raise HTTPException(404, "Capability not found") from None
+            except CapabilityConfigError as exc:
+                raise HTTPException(400, str(exc)) from None
+            if capability_definition.admin_only and not _is_admin(user):
+                raise HTTPException(403, "This capability requires admin privileges")
+            if not capability_definition.enabled:
+                raise HTTPException(409, "Capability is disabled")
+            if req.trigger_type not in capability_definition.triggers:
+                raise HTTPException(
+                    400,
+                    f"Capability does not support {req.trigger_type} triggers",
+                )
         # Block shell-executing action types for non-admins. action_run_local
         # uses subprocess.run(shell=True) and ssh_command / run_script run
         # arbitrary commands.
@@ -489,6 +520,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             if req.task_type == "action":
                 from src.builtin_actions import BUILTIN_ACTION_INFO
                 name = BUILTIN_ACTION_INFO.get(req.action, req.action or "Action Task")
+            elif req.task_type == "capability" and capability_definition:
+                name = capability_definition.name
             elif req.prompt:
                 name = await _generate_task_name(req.prompt, owner=user)
             else:
@@ -539,6 +572,12 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 prompt=req.prompt,
                 task_type=req.task_type,
                 action=req.action,
+                capability_id=req.capability_id,
+                capability_input=(
+                    json.dumps(capability_values, separators=(",", ":"), sort_keys=True)
+                    if capability_values is not None
+                    else None
+                ),
                 schedule=req.schedule,
                 scheduled_time=req.scheduled_time,
                 scheduled_day=req.scheduled_day,
@@ -691,6 +730,32 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 if req.action in _ADMIN_ONLY_ACTIONS and not _is_admin(user):
                     raise HTTPException(403, f"Action '{req.action}' requires admin privileges")
                 task.action = req.action
+            if req.capability_id is not None or req.capability_input is not None:
+                from src.capability_runner import get_capability_manager
+                from src.capabilities import CapabilityConfigError
+                capability_id = req.capability_id or getattr(task, "capability_id", None)
+                if not capability_id:
+                    raise HTTPException(400, "Capability id is required")
+                manager = get_capability_manager()
+                try:
+                    definition = manager.get_definition(capability_id)
+                    values = definition.validate_input(
+                        req.capability_input
+                        if req.capability_input is not None
+                        else _capability_input(task)
+                    )
+                except KeyError:
+                    raise HTTPException(404, "Capability not found") from None
+                except CapabilityConfigError as exc:
+                    raise HTTPException(400, str(exc)) from None
+                if definition.admin_only and not _is_admin(user):
+                    raise HTTPException(403, "This capability requires admin privileges")
+                if not definition.enabled:
+                    raise HTTPException(409, "Capability is disabled")
+                task.capability_id = capability_id
+                task.capability_input = json.dumps(
+                    values, separators=(",", ":"), sort_keys=True
+                )
             if req.output_target is not None:
                 task.output_target = req.output_target
             if req.model is not None:
@@ -698,6 +763,19 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             if req.endpoint_url is not None:
                 task.endpoint_url = req.endpoint_url or None
             if req.trigger_type is not None:
+                if (task.task_type or "llm") == "capability":
+                    from src.capability_runner import get_capability_manager
+                    try:
+                        definition = get_capability_manager().get_definition(
+                            task.capability_id or ""
+                        )
+                    except KeyError:
+                        raise HTTPException(404, "Capability not found") from None
+                    if req.trigger_type not in definition.triggers:
+                        raise HTTPException(
+                            400,
+                            f"Capability does not support {req.trigger_type} triggers",
+                        )
                 # Generate webhook token when switching to webhook trigger
                 if req.trigger_type == "webhook" and not task.webhook_token:
                     task.webhook_token = secrets.token_urlsafe(32)

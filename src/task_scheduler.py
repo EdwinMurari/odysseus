@@ -356,7 +356,15 @@ class TaskScheduler:
             logger.debug("Task abort marker failed for %s", task_id, exc_info=True)
             return False
 
-    def add_notification(self, task_name: str, status: str, task_id: str = None, owner: str = None, body: str = None):
+    def add_notification(
+        self,
+        task_name: str,
+        status: str,
+        task_id: str = None,
+        owner: str = None,
+        body: str = None,
+        capability_run_id: str = None,
+    ):
         """Store a notification about a completed task run. Tagged with the
         task's owner so `pop_notifications` can return only that user's
         notifications and prevent cross-tenant drain. `body` is the result
@@ -368,6 +376,7 @@ class TaskScheduler:
             "task_id": task_id,
             "owner": owner,
             "body": (body[:500] + "…") if body and len(body) > 500 else body,
+            "capability_run_id": capability_run_id,
             "timestamp": _utcnow().isoformat() + "Z",
         })
         # Cap at 50 to avoid unbounded growth
@@ -770,6 +779,14 @@ class TaskScheduler:
                     run.result = result
                     if not success:
                         run.error = result
+                elif task_type == "capability":
+                    result, success = await self._execute_capability_task(
+                        task, run_id=run_id
+                    )
+                    run.status = "success" if success else "error"
+                    run.result = result
+                    if not success:
+                        run.error = result
                 elif task_type == "research":
                     result = await self._execute_research_task(task, db)
                     run.status = "success"
@@ -803,6 +820,16 @@ class TaskScheduler:
                 return
             except asyncio.CancelledError:
                 logger.info("Task '%s' stopped by user", task.name)
+                if task_type == "capability":
+                    try:
+                        from src.capability_runner import get_capability_manager
+                        await get_capability_manager().cancel_for_task_run(run_id)
+                    except Exception:
+                        logger.debug(
+                            "Capability cancellation failed for task run %s",
+                            run_id,
+                            exc_info=True,
+                        )
                 run_obj = db.query(TaskRun).filter(TaskRun.id == run_id).first()
                 if run_obj:
                     run_obj.status = "aborted"
@@ -875,16 +902,27 @@ class TaskScheduler:
             # explicitly turned them off for this task — quiets chatty
             # housekeeping cron tasks without disabling them entirely.
             should_notify = (
-                (task.task_type or "llm") in {"llm", "research"}
+                (task.task_type or "llm") in {"llm", "research", "capability"}
                 and getattr(task, "notifications_enabled", True)
             )
             if should_notify:
+                capability_run_id = None
+                if (task.task_type or "llm") == "capability":
+                    from core.database import CapabilityRun
+                    capability_run = (
+                        db.query(CapabilityRun)
+                        .filter(CapabilityRun.task_run_id == run.id)
+                        .order_by(CapabilityRun.created_at.desc())
+                        .first()
+                    )
+                    capability_run_id = capability_run.id if capability_run else None
                 self.add_notification(
                     task.name,
                     run.status,
                     task_id,
                     owner=task.owner,
                     body=run.result if output == "notification" else None,
+                    capability_run_id=capability_run_id,
                 )
 
             # Log result to the assistant chat so all task activity is visible.
@@ -924,7 +962,9 @@ class TaskScheduler:
                 _t_for_notify = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
                 _should_notify_error = (
                     bool(_t_for_notify)
-                    and (_t_for_notify.task_type or "llm") in {"llm", "research"}
+                    and (_t_for_notify.task_type or "llm") in {
+                        "llm", "research", "capability"
+                    }
                     and getattr(_t_for_notify, "notifications_enabled", True)
                 )
             except Exception:
@@ -1089,6 +1129,67 @@ class TaskScheduler:
         except Exception as e:
             logger.error(f"Action '{task.action}' failed: {e}")
             return str(e), False
+
+    async def _execute_capability_task(
+        self, task, run_id: str | None = None
+    ) -> tuple[str, bool]:
+        """Run a registered capability and wait for its durable result."""
+        from src.capability_runner import get_capability_manager
+
+        capability_id = (getattr(task, "capability_id", None) or "").strip()
+        if not capability_id:
+            return "Capability task has no capability id", False
+        try:
+            values = (
+                json.loads(getattr(task, "capability_input", None) or "{}")
+            )
+        except (TypeError, ValueError):
+            return "Capability task input is invalid JSON", False
+        manager = get_capability_manager()
+        try:
+            definition = manager.get_definition(capability_id)
+            created = await manager.create_run(
+                capability_id,
+                values,
+                getattr(task, "owner", None),
+                scheduled_task_id=task.id,
+                task_run_id=run_id,
+            )
+            self._set_run_progress(
+                run_id,
+                f"Capability {definition.name} started ({created['id']})",
+            )
+            def _mirror_capability_progress(run):
+                progress = run.get("progress") or {}
+                details = ", ".join(
+                    f"{str(key).replace('_', ' ')}: {value}"
+                    for key, value in progress.items()
+                    if not isinstance(value, (dict, list))
+                )
+                message = run.get("summary") or f"{definition.name}: {run['status']}"
+                if details:
+                    message = f"{message} ({details})"
+                self._set_run_progress(run_id, message[:2000])
+
+            completed = await manager.wait(
+                created["id"],
+                timeout=definition.timeout_seconds + 60,
+                on_update=_mirror_capability_progress,
+            )
+        except KeyError:
+            return f"Capability is not registered: {capability_id}", False
+        except Exception as exc:
+            return f"Capability failed: {type(exc).__name__}: {exc}", False
+
+        summary = completed.get("summary") or completed.get("error") or completed["status"]
+        if completed.get("document_id"):
+            summary += (
+                f"\n\n[Open report](#document-{completed['document_id']})"
+            )
+        summary += (
+            f"\n\n[View capability run](#capability-run-{completed['id']})"
+        )
+        return summary, completed["status"] == "success"
 
     # ── Check-in source discovery ──
     # Pattern-based: if an MCP server has a tool matching a pattern, it becomes
@@ -2029,6 +2130,34 @@ class TaskScheduler:
 
     async def stop_task(self, task_id: str) -> bool:
         """Request cancellation of a running/queued task and mark its run aborted."""
+        active_run_id = None
+        try:
+            from core.database import SessionLocal, TaskRun
+            db = SessionLocal()
+            try:
+                row = (
+                    db.query(TaskRun)
+                    .filter(
+                        TaskRun.task_id == task_id,
+                        TaskRun.status.in_(("queued", "running")),
+                    )
+                    .order_by(TaskRun.started_at.desc())
+                    .first()
+                )
+                active_run_id = row.id if row else None
+            finally:
+                db.close()
+        except Exception:
+            pass
+        if active_run_id:
+            try:
+                from src.capability_runner import get_capability_manager
+                await get_capability_manager().cancel_for_task_run(active_run_id)
+            except Exception:
+                logger.debug(
+                    "Capability cancellation failed for task %s", task_id,
+                    exc_info=True,
+                )
         handle = self._task_handles.get(task_id)
         stopped = False
         if handle and not handle.done():

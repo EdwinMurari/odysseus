@@ -55,6 +55,9 @@ def _doc_to_dict(doc: Document) -> Dict[str, Any]:
         "source_email_folder":     getattr(doc, "source_email_folder", None),
         "source_email_account_id": getattr(doc, "source_email_account_id", None),
         "source_email_message_id": getattr(doc, "source_email_message_id", None),
+        "source_capability_id": getattr(doc, "source_capability_id", None),
+        "source_capability_run_id": getattr(doc, "source_capability_run_id", None),
+        "source_task_id": getattr(doc, "source_task_id", None),
     }
 
 def _version_to_dict(v: DocumentVersion) -> Dict[str, Any]:

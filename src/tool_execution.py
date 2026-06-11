@@ -775,6 +775,10 @@ async def _execute_tool_block_impl(
     elif tool == "manage_tasks":
         desc = "manage_tasks"
         result = await do_manage_tasks(content, owner=owner)
+    elif tool == "manage_capabilities":
+        from src.capability_runner import do_manage_capabilities
+        desc = "manage_capabilities"
+        result = await do_manage_capabilities(content, owner=owner)
     elif tool == "manage_skills":
         desc = "manage_skills"
         result = await do_manage_skills(content, owner=owner)

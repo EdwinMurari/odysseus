@@ -22,10 +22,9 @@ from services.hwfit.models import (
     is_prequantized,
 )
 
-# GGUF KV-cache cost per token, in bytes-per-active-billion-param, by cache type.
-# q4_0 is ~half of q8_0 is ~half of f16. The 8e-6 base in estimate_memory_gb is
-# the q8_0-ish figure; scale from there.
-_KV_FACTOR = {"q4_0": 0.5, "q8_0": 1.0, "f16": 2.0}
+# GGML block storage cost per scalar. Quant blocks carry scale metadata, so q4
+# and q8 use slightly more than 0.5 and 1 byte respectively.
+_KV_BYTES = {"q4_0": 18 / 32, "q8_0": 34 / 32, "f16": 2.0}
 
 # Quant ladder from highest quality/size down. A profile that wants "best quant
 # that fits fully on GPU" walks this until one fits.
@@ -41,10 +40,100 @@ def _weights_gb(model, quant, fixed_gb=None):
     return params_b(model) * QUANT_BPP.get(quant, 0.58)
 
 
+def _positive_int(model, *keys):
+    for key in keys:
+        value = model.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    return 0
+
+
+def _kv_width(model):
+    """Scalars stored per K or V vector in one layer.
+
+    KV size depends on attention shape, not model parameter count. Prefer exact
+    GQA/MQA metadata. Older catalog rows lack it, so infer hidden width from
+    active parameters and assume full multi-head attention. That fallback
+    intentionally overestimates grouped-query models instead of recommending a
+    context that can make the OS kill llama.cpp during cache allocation.
+    """
+    hidden = _positive_int(model, "hidden_size", "n_embd", "d_model")
+    heads = _positive_int(model, "num_attention_heads", "n_head")
+    kv_heads = _positive_int(model, "num_key_value_heads", "n_head_kv")
+    head_dim = _positive_int(model, "head_dim")
+    if not head_dim and hidden and heads:
+        head_dim = hidden // heads
+    if kv_heads and head_dim:
+        return kv_heads * head_dim
+    if hidden:
+        return hidden
+
+    layers = max(_n_layers(model), 1)
+    active_params = _active_params_b(model) * 1_000_000_000
+    if active_params <= 0:
+        return 4096
+    import math
+    return max(1024, min(16384, int(math.sqrt(active_params / (12 * layers)))))
+
+
 def _kv_gb(model, ctx, kv_type):
-    """KV-cache VRAM at a context length and cache type."""
-    kv_params = _active_params_b(model)
-    return 0.000008 * kv_params * ctx * _KV_FACTOR.get(kv_type, 1.0)
+    """Worst-case KV allocation across CPU/GPU, in GiB."""
+    layers = _n_layers(model)
+    width = _kv_width(model)
+    bytes_per_value = _KV_BYTES.get(kv_type, 2.0)
+    return 2 * layers * width * ctx * bytes_per_value / (1024 ** 3)
+
+
+def _host_ram_budget_gb(system):
+    """Leave enough live RAM for OS, Python, page tables, and allocator spikes."""
+    available = float(system.get("available_ram_gb") or 0)
+    if available <= 0:
+        return float("inf")
+    return max(0.0, available - max(2.0, available * 0.20))
+
+
+def _host_ram_gb(model, quant, kv_gb, vram_budget_gb, fixed_gb=None):
+    weights = _weights_gb(model, quant, fixed_gb)
+    gpu_overflow = max(0.0, weights + kv_gb + 0.6 - vram_budget_gb)
+    offloaded_weights = min(weights, gpu_overflow)
+    # llama.cpp may place KV on host even with GPU layers offloaded. Count full
+    # KV plus CPU-resident weights; this matches startup's dangerous peak.
+    return kv_gb + offloaded_weights + 1.0
+
+
+def compute_safe_context_limit(
+    system, model, kv_type="f16", serve_weights_gb=None, serve_quant=None
+):
+    """Largest power-of-two context that fits current host-memory headroom."""
+    vram = float(system.get("gpu_vram_gb") or 0)
+    if vram <= 0:
+        return 0
+    model_ctx_max = 0
+    for key in ("context_length", "max_position_embeddings", "n_ctx_train", "context"):
+        value = model.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            model_ctx_max = int(value)
+            break
+    if model_ctx_max <= 0:
+        model_ctx_max = 131072
+
+    is_vision = bool(
+        model.get("is_multimodal") or model.get("vision") or model.get("mmproj")
+        or "vl" in str(model.get("name", "")).lower()
+    )
+    vram_budget = max(vram - (1.1 if is_vision else 0.4), 1.0)
+    host_budget = _host_ram_budget_gb(system)
+    quant = serve_quant or model.get("quantization") or "Q4_K_M"
+    context = model_ctx_max
+    while context >= 8192:
+        kv = _kv_gb(model, context, kv_type)
+        host_est = _host_ram_gb(
+            model, quant, kv, vram_budget, fixed_gb=serve_weights_gb
+        )
+        if host_est <= host_budget:
+            return context
+        context //= 2
+    return 0
 
 
 def _n_layers(model):
@@ -129,6 +218,7 @@ def compute_serve_profiles(system, model, serve_weights_gb=None, serve_quant=Non
     )
     headroom = 1.1 if is_vision else 0.4
     budget = max(vram - headroom, 1.0)
+    host_budget = _host_ram_budget_gb(system)
 
     # Prequantized (AWQ/GPTQ/FP8) served via GGUF fallback use a fixed ~Q4 quant;
     # GGUF models can pick their quant. Pick a sensible per-profile quant.
@@ -198,8 +288,12 @@ def compute_serve_profiles(system, model, serve_weights_gb=None, serve_quant=Non
             kv = _kv_gb(model, cur_ctx, kv_type)
             n_cpu_moe, fits = _cpu_moe_for_budget(model, quant, kv, budget, fixed_gb=serve_weights_gb)
             est = _weights_gb(model, quant, serve_weights_gb) + kv + 0.6
+            host_est = _host_ram_gb(
+                model, quant, kv, budget, fixed_gb=serve_weights_gb
+            )
+            host_fits = host_est <= host_budget
             # If a non-MoE model can't fit even fully offloaded, try less context.
-            if model.get("is_moe") or fits or cur_ctx <= ctx_floor:
+            if host_fits and (model.get("is_moe") or fits or cur_ctx <= ctx_floor):
                 profiles.append({
                     "key": key,
                     "label": label,
@@ -213,6 +307,11 @@ def compute_serve_profiles(system, model, serve_weights_gb=None, serve_quant=Non
                     # estimate at `budget`, not the full card — this also leaves
                     # the vision-encoder headroom visible in the number.
                     "est_vram_gb": round(min(est, budget), 1),
+                    "est_kv_gb": round(kv, 1),
+                    "est_host_ram_gb": round(host_est, 1),
+                    "host_ram_budget_gb": (
+                        round(host_budget, 1) if host_budget != float("inf") else None
+                    ),
                     # For MoE we treat it as fitting via offload; report whether
                     # it fit WITHOUT offload as the "clean" flag.
                     "fits": fits or bool(model.get("is_moe")),

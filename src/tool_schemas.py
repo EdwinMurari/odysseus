@@ -500,6 +500,40 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "manage_capabilities",
+            "description": "Discover, inspect, configure defaults, check readiness, run, explain, monitor, rerun, and cancel registered external task engines. Runs are durable and return immediately with a run id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "describe", "configure", "readiness", "run", "status", "explain", "log", "cancel", "rerun"]
+                    },
+                    "capability_id": {
+                        "type": "string",
+                        "description": "Registered capability id for describe, configure, readiness, or run"
+                    },
+                    "input": {
+                        "type": "object",
+                        "description": "Typed input object matching the capability manifest",
+                        "additionalProperties": True
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "Capability run id for status, explain, log, cancel, or rerun"
+                    },
+                    "tail": {
+                        "type": "integer",
+                        "description": "Log lines to return; default 200"
+                    }
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "manage_tasks",
             "description": "Manage scheduled/automated tasks: list, create, edit, delete, pause, resume, or run tasks. Use this for ANY recurring/scheduled request ('every morning…', 'each day at 7:30', 'daily summarize…') — create a task rather than doing it once. Task types: llm (AI runs a prompt), research (runs the deep-research pipeline on a question), or action (built-in automation). Triggers can be time-based or event-based.",
             "parameters": {
@@ -510,8 +544,10 @@ FUNCTION_TOOL_SCHEMAS = [
                     "task_id": {"type": "string", "description": "Task ID (for edit/delete/pause/resume/run)"},
                     "name": {"type": "string", "description": "Task name"},
                     "prompt": {"type": "string", "description": "The instruction (for task_type=llm) or the research question (for task_type=research). Required for both."},
-                    "task_type": {"type": "string", "enum": ["llm", "research", "action"],
-                                  "description": "llm = AI runs your prompt; research = runs the deep-research pipeline on the prompt as a question; action = direct built-in function"},
+                    "task_type": {"type": "string", "enum": ["llm", "research", "action", "capability"],
+                                  "description": "llm = AI prompt; research = deep research; action = built-in function; capability = registered external task engine"},
+                    "capability_id": {"type": "string", "description": "Registered capability id for task_type=capability"},
+                    "capability_input": {"type": "object", "description": "Typed capability input object"},
                     "action_name": {"type": "string", "enum": [
                         "tidy_sessions", "tidy_documents", "consolidate_memory", "tidy_research",
                         "summarize_emails", "draft_email_replies", "extract_email_events",
@@ -1385,7 +1421,7 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
                     content += f" {ak}={colors[ak]}"
         else:
             content = action
-    elif tool_type in ("manage_tasks", "manage_skills", "api_call",
+    elif tool_type in ("manage_tasks", "manage_capabilities", "manage_skills", "api_call",
                         "manage_endpoints", "manage_mcp", "manage_webhooks",
                         "manage_tokens", "manage_documents", "manage_settings"):
         content = json.dumps(args)

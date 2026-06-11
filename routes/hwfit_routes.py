@@ -235,7 +235,7 @@ def setup_hwfit_routes():
         return {"system": system, "models": results}
 
     @router.get("/profiles")
-    def get_serve_profiles(model: str = "", host: str = "", ssh_port: str = "", platform: str = "", fresh: bool = False, serve_weights_gb: float = 0.0, serve_quant: str = ""):
+    def get_serve_profiles(model: str = "", host: str = "", ssh_port: str = "", platform: str = "", fresh: bool = False, serve_weights_gb: float = 0.0, serve_quant: str = "", cache_type: str = ""):
         """Compute llama.cpp serve profiles (Quality/Balanced/Speed) for `model`
         against the detected hardware on `host` (or local). Returns concrete
         flags (n_gpu_layers, n_cpu_moe, cache_type, ctx) the serve UI can apply.
@@ -246,7 +246,10 @@ def setup_hwfit_routes():
         """
         from services.hwfit.hardware import detect_system
         from services.hwfit.models import get_models
-        from services.hwfit.profiles import compute_serve_profiles
+        from services.hwfit.profiles import (
+            compute_safe_context_limit,
+            compute_serve_profiles,
+        )
         host, ssh_port = _validate_detection_target(host, ssh_port)
         system = detect_system(host=host, ssh_port=ssh_port, platform=platform, fresh=fresh)
         if system.get("error"):
@@ -283,14 +286,22 @@ def setup_hwfit_routes():
             if isinstance(v, (int, float)) and v > 0:
                 model_ctx_max = int(v)
                 break
+        profiles = compute_serve_profiles(
+            system, m,
+            serve_weights_gb=(serve_weights_gb or None),
+            serve_quant=(serve_quant or None),
+        )
         return {
             "system": system,
-            "profiles": compute_serve_profiles(
-                system, m,
+            "profiles": profiles,
+            "model_ctx_max": model_ctx_max,
+            "safe_ctx_max": compute_safe_context_limit(
+                system,
+                m,
+                kv_type=cache_type if cache_type in ("q4_0", "q8_0", "f16") else "f16",
                 serve_weights_gb=(serve_weights_gb or None),
                 serve_quant=(serve_quant or None),
             ),
-            "model_ctx_max": model_ctx_max,
         }
 
     @router.get("/image-models")

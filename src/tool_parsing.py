@@ -136,6 +136,8 @@ _TOOL_NAME_MAP = {
     "manage_tasks": "manage_tasks",
     "tasks": "manage_tasks",
     "schedule": "manage_tasks",
+    "manage_capabilities": "manage_capabilities",
+    "capabilities": "manage_capabilities",
     "list_models": "list_models",
     "models": "list_models",
     "available_models": "list_models",

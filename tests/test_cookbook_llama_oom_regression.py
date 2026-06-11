@@ -16,6 +16,14 @@ def test_serve_context_preserves_saved_value_and_defaults_to_8192():
     assert "resets to the model max on every open" not in source
 
 
+def test_serve_context_is_clamped_to_hardware_safe_limit():
+    source = (ROOT / "static/js/cookbookServe.js").read_text(encoding="utf-8")
+
+    assert "panel._safeCtxMax" in source
+    assert "data.safe_ctx_max" in source
+    assert "Math.min(...caps)" in source
+
+
 def test_linux_llama_launch_does_not_fallback_after_native_runtime_error():
     source = (ROOT / "static/js/cookbook.js").read_text(encoding="utf-8")
 
