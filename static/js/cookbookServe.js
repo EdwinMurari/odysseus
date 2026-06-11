@@ -916,21 +916,25 @@ function _rerenderCachedModels() {
       updateCmd();
 
       // Context clamp. Two ceilings:
-      //  - ABSOLUTE_CTX_MAX: a hard sanity cap (no LLM trains past ~1M tokens),
-      //    so an obvious typo like 16000000 can never reach llama.cpp even when
-      //    we don't know the model's real limit (not in catalog / profiles
-      //    fetch failed). This is what stops the radv ErrorDeviceLost crash.
+      //  - ABSOLUTE_CTX_MAX: safe fallback while hardware sizing is loading or
+      //    unavailable. Large contexts require explicit memory validation;
+      //    model training limit alone says nothing about launch-time KV memory.
       //  - panel._modelCtxMax: the model's actual trained limit (set by the
       //    profiles fetch below) — a tighter, model-specific cap when known.
-      const ABSOLUTE_CTX_MAX = 1048576;   // 1M tokens — above any real n_ctx_train
+      const ABSOLUTE_CTX_MAX = 32768;
       const _ctxEl0 = panel.querySelector('[data-field="ctx"]');
       function _clampCtx(announce) {
         if (!_ctxEl0) return;
-        const cap = panel._modelCtxMax > 0 ? panel._modelCtxMax : ABSOLUTE_CTX_MAX;
+        const caps = [];
+        if (panel._modelCtxMax > 0) caps.push(panel._modelCtxMax);
+        if (panel._safeCtxMax > 0) caps.push(panel._safeCtxMax);
+        if (!panel._safeCtxChecked) caps.push(ABSOLUTE_CTX_MAX);
+        else if (!(panel._safeCtxMax > 0)) caps.push(8192);
+        const cap = Math.min(...caps);
         const v = parseInt(_ctxEl0.value, 10);
         if (Number.isFinite(v) && v > cap) {
           _ctxEl0.value = String(cap);
-          _ctxEl0.title = `Capped to ${panel._modelCtxMax > 0 ? "this model's trained limit" : "the maximum sane context"} (${cap}).`;
+          _ctxEl0.title = `Capped to safe context for this model and host (${cap}).`;
           if (announce) uiModule.showToast(`Context capped to ${cap}`);
           updateCmd();
         }
@@ -950,6 +954,15 @@ function _rerenderCachedModels() {
         try {
           const host = (_es.remoteHost || '').trim();
           const params = new URLSearchParams({ model: repo });
+          const selectedRel = panel.querySelector('[data-field="gguf_file"]')?.value || '';
+          const selectedFile = _runnableGgufFiles(m).find(file => file.rel_path === selectedRel);
+          // Size against f16 regardless of current dropdown value. Saved config
+          // can change cache dtype after this request; f16 remains safe for all.
+          params.set('cache_type', 'f16');
+          if (selectedFile?.size_bytes > 0) {
+            params.set('serve_weights_gb', String(selectedFile.size_bytes / (1024 ** 3)));
+          }
+          if (selectedFile?.quant) params.set('serve_quant', selectedFile.quant);
           if (host) {
             params.set('host', host);
             const _sp = (_es.servers || []).find(s => s.host === host)?.port;
@@ -958,10 +971,13 @@ function _rerenderCachedModels() {
           const res = await fetch(`/api/hwfit/profiles?${params}`);
           const data = await res.json();
           const ctxMax = Number(data && data.model_ctx_max) || 0;
+          const safeCtxMax = Number(data && data.safe_ctx_max) || 0;
+          panel._safeCtxChecked = true;
           if (ctxMax > 0) {
             panel._modelCtxMax = ctxMax;
-            _clampCtx(false);
           }
+          if (safeCtxMax > 0) panel._safeCtxMax = safeCtxMax;
+          _clampCtx(false);
         } catch { /* clamp falls back to the static default */ }
       })();
 

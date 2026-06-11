@@ -178,6 +178,19 @@ async function _fetchActions() {
   return _builtinActions;
 }
 
+let _capabilities = null;
+async function _fetchCapabilities() {
+  if (_capabilities) return _capabilities;
+  try {
+    const res = await fetch(`${API_BASE}/api/capabilities`, { credentials: 'same-origin' });
+    const data = await res.json();
+    _capabilities = data.capabilities || [];
+  } catch (e) {
+    _capabilities = [];
+  }
+  return _capabilities;
+}
+
 let _urgentEmailSettings = null;
 async function _fetchUrgentEmailSettings() {
   if (_urgentEmailSettings) return _urgentEmailSettings;
@@ -338,13 +351,18 @@ const _TASK_ICONS = {
   _action_default:     '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   // LLM task fallback (chat bubble)
   _llm_default:        '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  _capability_default: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12h8M12 8v8"/>',
 };
 
 function _taskIcon(task) {
   const action = task.action;
   let path = _TASK_ICONS[action];
   if (!path) {
-    path = task.task_type === 'action' ? _TASK_ICONS._action_default : _TASK_ICONS._llm_default;
+    path = task.task_type === 'action'
+      ? _TASK_ICONS._action_default
+      : task.task_type === 'capability'
+        ? _TASK_ICONS._capability_default
+        : _TASK_ICONS._llm_default;
   }
   return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.4;flex-shrink:0;position:relative;top:-4px;">${path}</svg>`;
 }
@@ -510,7 +528,7 @@ const _CATEGORY_MAP = {
 // top instead of scrolling off the bottom of the list. The remaining
 // order is preserved for backwards-compatibility with users who've
 // learned where things are.
-const _CATEGORY_ORDER = ['Cookbook', 'Other', 'Calendar', 'Email', 'Chats', 'Documents', 'Memory', 'Research', 'Skills', 'Assistant', 'System'];
+const _CATEGORY_ORDER = ['Cookbook', 'Capabilities', 'Other', 'Calendar', 'Email', 'Chats', 'Documents', 'Memory', 'Research', 'Skills', 'Assistant', 'System'];
 const _CATEGORY_ICONS = {
   Calendar:  '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
   Email:     '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
@@ -523,10 +541,12 @@ const _CATEGORY_ICONS = {
   System:    '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
   // Cookbook icon — matches the recipe-book glyph used on the sidebar.
   Cookbook:  '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
+  Capabilities: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12h8M12 8v8"/>',
   Other:     '<circle cx="12" cy="12" r="3"/>',
 };
 
 function _categoryFor(task) {
+  if (task.task_type === 'capability') return 'Capabilities';
   if (task.task_type === 'action' && task.action) {
     return _CATEGORY_MAP[task.action] || 'Other';
   }
@@ -785,12 +805,15 @@ function _renderList() {
     }
     const taskType = task.task_type || 'llm';
     const p = task.prompt || '';
-    if (p || taskType === 'action') {
+    if (p || taskType === 'action' || taskType === 'capability') {
       const desc = document.createElement('div');
       desc.style.cssText = 'font-size:11px;opacity:0.6;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;';
       if (taskType === 'action') {
         const am = (_builtinActions || []).find(a => a.name === task.action);
         desc.textContent = am?.description || task.action || '—';
+      } else if (taskType === 'capability') {
+        const capability = (_capabilities || []).find(c => c.id === task.capability_id);
+        desc.textContent = capability?.description || task.capability_id || 'Capability';
       } else {
         desc.textContent = p;
       }
@@ -940,6 +963,7 @@ const _TASK_PRESETS = [
   { label: 'Research on event',     desc: 'Run deep research after app events',           taskType: 'research', triggerType: 'event' },
   { label: 'Action on schedule',    desc: 'Run tidy/cleanup on a timer',                  taskType: 'action',   triggerType: 'schedule' },
   { label: 'Action on event',       desc: 'Run tidy/cleanup every N sessions or messages', taskType: 'action', triggerType: 'event' },
+  { label: 'Capability on schedule', desc: 'Run a registered external task engine',         taskType: 'capability', triggerType: 'schedule' },
   { label: 'Webhook triggered',     desc: 'Trigger via external HTTP call',               taskType: 'llm',      triggerType: 'webhook' },
 ];
 
@@ -948,6 +972,7 @@ function _presetIcon(p) {
   const wrap = (inner) => `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.4;flex-shrink:0;">${inner}</svg>`;
   if (p.taskType === 'research') return wrap('<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>');
   if (p.taskType === 'action') return wrap('<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10z"/>'); // sparkle
+  if (p.taskType === 'capability') return wrap('<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12h8M12 8v8"/>');
   if (p.triggerType === 'webhook') return wrap('<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/>'); // link
   if (p.triggerType === 'event') return wrap('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'); // activity pulse
   return wrap('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'); // clock (scheduled prompt)
@@ -1026,6 +1051,7 @@ function _showForm(existing, initTaskType, initTriggerType) {
         <button class="task-toggle-btn ${curTaskType === 'llm' ? 'active' : ''}" data-val="llm" style="position:relative;top:-4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px;"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>Prompt</button>
         <button class="task-toggle-btn ${curTaskType === 'research' ? 'active' : ''}" data-val="research" style="position:relative;top:-4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Research</button>
         <button class="task-toggle-btn ${curTaskType === 'action' ? 'active' : ''}" data-val="action" style="position:relative;top:-4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Action</button>
+        <button class="task-toggle-btn ${curTaskType === 'capability' ? 'active' : ''}" data-val="capability" style="position:relative;top:-4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:4px;"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12h8M12 8v8"/></svg>Capability</button>
       </div>
 
       <div id="task-form-type-opts"></div>
@@ -1095,7 +1121,7 @@ function _showForm(existing, initTaskType, initTriggerType) {
         <label class="task-form-label">Persona <span style="opacity:0.5;font-weight:normal;font-size:10px;">(optional — biases the output voice)</span></label>
         <select id="task-form-persona" class="task-form-input">${_personaOptsHtml}</select>
       `;
-    } else {
+    } else if (taskType === 'action') {
       typeOpts.innerHTML = `
         <label class="task-form-label">Action</label>
         <select id="task-form-action" class="task-form-input">
@@ -1138,6 +1164,86 @@ function _showForm(existing, initTaskType, initTriggerType) {
         }
         sel.addEventListener('change', syncActionExtra);
         syncActionExtra();
+      });
+    } else {
+      typeOpts.innerHTML = `
+        <label class="task-form-label">Capability</label>
+        <select id="task-form-capability" class="task-form-input">
+          <option value="">Loading...</option>
+        </select>
+        <div id="task-form-capability-description" class="memory-desc" style="font-size:11px;margin-top:4px;"></div>
+        <div id="task-form-capability-inputs"></div>
+      `;
+      const renderCapabilityInputs = () => {
+        const sel = document.getElementById('task-form-capability');
+        const wrap = document.getElementById('task-form-capability-inputs');
+        const desc = document.getElementById('task-form-capability-description');
+        const capability = (_capabilities || []).find(c => c.id === sel?.value);
+        if (!wrap || !capability) return;
+        if (desc) desc.textContent = capability.description || '';
+        wrap.innerHTML = '';
+        const current = existing?.capability_input || {};
+        for (const input of (capability.inputs || [])) {
+          const label = document.createElement('label');
+          label.className = 'task-form-label';
+          label.textContent = `${input.label || input.name}${input.required ? ' *' : ''}`;
+          wrap.appendChild(label);
+          let field;
+          if (input.choices?.length) {
+            field = document.createElement('select');
+            for (const choice of input.choices) {
+              const opt = document.createElement('option');
+              opt.value = String(choice);
+              opt.textContent = String(choice);
+              field.appendChild(opt);
+            }
+          } else if (input.type === 'boolean') {
+            field = document.createElement('input');
+            field.type = 'checkbox';
+          } else if (input.type === 'text') {
+            field = document.createElement('textarea');
+            field.rows = 3;
+          } else {
+            field = document.createElement('input');
+            field.type = input.type === 'integer' || input.type === 'number' ? 'number' : 'text';
+            if (input.type === 'number') field.step = 'any';
+          }
+          field.className = 'task-form-input';
+          field.dataset.capabilityInput = input.name;
+          field.dataset.inputType = input.type;
+          field.dataset.required = input.required ? '1' : '0';
+          const value = Object.prototype.hasOwnProperty.call(current, input.name)
+            ? current[input.name]
+            : input.default;
+          if (input.type === 'boolean') field.checked = !!value;
+          else if (value !== null && value !== undefined) field.value = String(value);
+          if (input.placeholder) field.placeholder = input.placeholder;
+          if (input.description || input.help) field.title = input.description || input.help;
+          wrap.appendChild(field);
+          if (input.description || input.help) {
+            const hint = document.createElement('div');
+            hint.className = 'memory-desc';
+            hint.style.cssText = 'font-size:10px;margin-top:2px;';
+            hint.textContent = input.description || input.help;
+            wrap.appendChild(hint);
+          }
+        }
+      };
+      _fetchCapabilities().then(capabilities => {
+        const sel = document.getElementById('task-form-capability');
+        if (!sel) return;
+        sel.innerHTML = '';
+        for (const capability of capabilities) {
+          if ((capability.removed || !capability.enabled)
+              && existing?.capability_id !== capability.id) continue;
+          const opt = document.createElement('option');
+          opt.value = capability.id;
+          opt.textContent = capability.name;
+          if (existing?.capability_id === capability.id) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        sel.addEventListener('change', renderCapabilityInputs);
+        renderCapabilityInputs();
       });
     }
   }
@@ -1443,6 +1549,11 @@ function _showForm(existing, initTaskType, initTriggerType) {
     const notifEl = document.getElementById('task-form-notif');
     if (notifEl) payload.notifications_enabled = !!notifEl.checked;
 
+    // Persona applies only to llm/research tasks; clear by default so switching
+    // task type drops a previously-pinned persona (the llm/research branch
+    // overrides this below).
+    payload.character_id = '';
+
     // Task type specifics
     if (taskType === 'llm' || taskType === 'research') {
       const prompt = document.getElementById('task-form-prompt')?.value?.trim();
@@ -1451,11 +1562,10 @@ function _showForm(existing, initTaskType, initTriggerType) {
         return;
       }
       payload.prompt = prompt;
+      // Persona applies only to llm/research; overrides the cleared default above.
       const personaVal = document.getElementById('task-form-persona')?.value || '';
       payload.character_id = personaVal;
-    } else {
-      // Non-llm/research tasks: explicitly clear any persona on switch.
-      payload.character_id = '';
+    } else if (taskType === 'action') {
       const action = document.getElementById('task-form-action')?.value;
       if (!action) {
         if (uiModule) uiModule.showError('Select an action');
@@ -1470,6 +1580,31 @@ function _showForm(existing, initTaskType, initTriggerType) {
           if (uiModule) uiModule.showError('Failed to save urgency rules');
           return;
         }
+      }
+    } else {
+      const capabilityId = document.getElementById('task-form-capability')?.value;
+      if (!capabilityId) {
+        if (uiModule) uiModule.showError('Select a capability');
+        return;
+      }
+      payload.capability_id = capabilityId;
+      payload.capability_input = {};
+      for (const field of document.querySelectorAll('[data-capability-input]')) {
+        const name = field.dataset.capabilityInput;
+        const type = field.dataset.inputType;
+        if (type === 'boolean') {
+          payload.capability_input[name] = !!field.checked;
+          continue;
+        }
+        if (!field.value && field.dataset.required === '1') {
+          if (uiModule) uiModule.showError(`${name} is required`);
+          return;
+        }
+        if (!field.value) continue;
+        payload.capability_input[name] =
+          type === 'integer' ? parseInt(field.value, 10) :
+          type === 'number' ? parseFloat(field.value) :
+          field.value;
       }
     }
 
@@ -2496,6 +2631,11 @@ function _renderMainView() {
       if (document.getElementById('tasks-list')) _renderList();
     });
   }
+  if (!_capabilities) {
+    _fetchCapabilities().then(() => {
+      if (document.getElementById('tasks-list')) _renderList();
+    });
+  }
 }
 
 // ---- Modal ----
@@ -2515,6 +2655,7 @@ export function openTasks(focusId, opts) {
   _viewingRuns = null;
   _outputTargets = null; // refresh available targets
   _builtinActions = null;
+  _capabilities = null;
   _triggerEvents = null;
 
   const modal = document.createElement('div');
@@ -2623,6 +2764,17 @@ export function openTasks(focusId, opts) {
   });
 }
 
+export function openCapabilitySchedule(capabilityId) {
+  openTasks();
+  _switchTab('new');
+  _showForm({
+    task_type: 'capability',
+    trigger_type: 'schedule',
+    capability_id: capabilityId,
+    capability_input: {},
+  }, 'capability', 'schedule');
+}
+
 let _pendingFocusTaskId = null;
 
 // Scroll to + briefly highlight a task card by id. Used by the chat
@@ -2686,6 +2838,11 @@ async function _pollTaskNotifications() {
     const notes = data.notifications || [];
     for (const n of notes) {
       const ok = n.status === 'success';
+      const openCapabilityRun = () => {
+        if (!n.capability_run_id) return;
+        location.hash = `capability-run-${n.capability_run_id}`;
+        window.capabilityModule?.open();
+      };
       // Tasks with output_target='notification' carry the result text in `body`
       // — show it as a real browser Notification (richer than a toast). Falls
       // back to a toast when permission is denied or unavailable.
@@ -2694,7 +2851,12 @@ async function _pollTaskNotifications() {
         let fired = false;
         try {
           if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-            new Notification(title, { body: n.body, tag: 'task-' + (n.task_id || title), icon: '/static/favicon.ico' });
+            const notification = new Notification(title, { body: n.body, tag: 'task-' + (n.task_id || title), icon: '/static/favicon.ico' });
+            notification.onclick = () => {
+              window.focus();
+              openCapabilityRun();
+              notification.close();
+            };
             fired = true;
           }
         } catch (_) {}
@@ -2703,7 +2865,9 @@ async function _pollTaskNotifications() {
       }
       const msg = `Task ${ok ? 'finished' : 'failed'}: ${n.task_name}`;
       if (!uiModule) continue;
-      if (ok) uiModule.showToast(msg, { duration: 5000 });
+      if (ok) uiModule.showToast(msg, n.capability_run_id
+        ? { duration: 7000, action: 'View run', onAction: openCapabilityRun }
+        : { duration: 5000 });
       else uiModule.showError(msg);
     }
   } catch (e) {
@@ -2726,6 +2890,6 @@ function stopNotificationPolling() {
 // Start polling on module load
 startNotificationPolling();
 
-const tasksModule = { openTasks, closeTasks, isTasksOpen, startNotificationPolling, stopNotificationPolling };
+const tasksModule = { openTasks, openCapabilitySchedule, closeTasks, isTasksOpen, startNotificationPolling, stopNotificationPolling };
 export default tasksModule;
 window.tasksModule = tasksModule;

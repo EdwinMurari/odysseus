@@ -50,6 +50,7 @@ function _maybeCascadeGrid(grid, tabKey) {
   setTimeout(() => grid.classList.remove('doclib-just-opened'), 900);
 }
 let _libraryDocs = [];
+let _libraryCapability = null;
 let _libraryTotal = 0;
 let _libraryOffset = 0;
 let _docsVisibleLimit = 20;  // chunked reveal (matches the Chats tab's 20)
@@ -324,6 +325,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     if (_librarySearch) params.set('search', _librarySearch);
     if (_libraryActiveLanguage) params.set('language', _libraryActiveLanguage);
     if (_libraryArchivedView) params.set('archived', 'true');
+    if (_libraryCapability) params.set('capability_id', _libraryCapability);
 
     try {
       const res = await fetch(`${API_BASE}/api/documents/library?${params}`);
@@ -353,7 +355,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     const el = document.getElementById('doclib-stats');
     if (!el) return;
     const totalAll = Object.values(_libraryLanguages).reduce((a, b) => a + b, 0);
-    if (_librarySearch || _libraryActiveLanguage) {
+    if (_librarySearch || _libraryActiveLanguage || _libraryCapability) {
       el.textContent = `${_libraryTotal} of ${totalAll} document${totalAll !== 1 ? 's' : ''}`;
     } else {
       el.textContent = `${totalAll} document${totalAll !== 1 ? 's' : ''}`;
@@ -366,6 +368,18 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     // Remove only language chip buttons, keep sort/select elements
     wrap.querySelectorAll('.memory-cat-chip').forEach(c => c.remove());
     const totalAll = Object.values(_libraryLanguages).reduce((a, b) => a + b, 0);
+
+    if (_libraryCapability) {
+      const capabilityChip = document.createElement('button');
+      capabilityChip.className = 'memory-cat-chip active';
+      capabilityChip.textContent = `capability: ${_libraryCapability} ×`;
+      capabilityChip.title = 'Clear capability filter';
+      capabilityChip.addEventListener('click', () => {
+        _libraryCapability = null;
+        libraryFetch(false);
+      });
+      wrap.appendChild(capabilityChip);
+    }
 
     // Hide the "all (0)" chip + lang chips entirely when there are no docs.
     if (totalAll === 0) return;
@@ -582,8 +596,38 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       // name here keeps the meta line scannable without duplicating the icon.
       pieces.push(`<span>${_esc(doc.language)}</span>`);
     }
+    if (doc.source_capability_id) {
+      pieces.push(
+        `<button class="doclib-capability-badge" data-capability="${_esc(doc.source_capability_id)}">`
+        + `${_esc(doc.source_capability_id)}</button>`
+      );
+    }
+    if (doc.source_capability_run_id) {
+      pieces.push(
+        `<button class="doclib-capability-badge" data-capability-run="${_esc(doc.source_capability_run_id)}">run</button>`
+      );
+    }
+    if (doc.source_task_id) {
+      pieces.push(
+        `<button class="doclib-capability-badge" data-source-task="${_esc(doc.source_task_id)}">schedule</button>`
+      );
+    }
     pieces.push(`<span>${_esc(libraryRelativeTime(doc.updated_at))}</span>`);
     meta.innerHTML = pieces.join('<span style="opacity:0.5;">\u00b7</span>');
+    meta.querySelector('.doclib-capability-badge')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      _libraryCapability = event.currentTarget.dataset.capability;
+      libraryFetch(false);
+    });
+    meta.querySelector('[data-capability-run]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      location.hash = `capability-run-${event.currentTarget.dataset.capabilityRun}`;
+      window.capabilityModule?.open();
+    });
+    meta.querySelector('[data-source-task]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      window.tasksModule?.openTasks(event.currentTarget.dataset.sourceTask);
+    });
     content.appendChild(meta);
     card.appendChild(content);
 
