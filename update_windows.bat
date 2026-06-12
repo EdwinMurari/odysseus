@@ -35,9 +35,23 @@ git pull --ff-only
 if errorlevel 1 goto :fail
 
 echo.
-echo [+] Rebuilding and restarting containers...
-docker compose up -d --build
+echo [+] Validating effective Docker Compose configuration...
+docker compose config --quiet
 if errorlevel 1 goto :fail
+
+echo.
+echo [+] Rebuilding and restarting containers...
+docker compose up -d --build --force-recreate
+if errorlevel 1 goto :fail
+
+echo.
+echo [+] Verifying Odysseus started with the selected image contract...
+docker compose ps --status running odysseus | findstr /I "odysseus" >nul
+if errorlevel 1 (
+  echo [!] Odysseus did not remain running after rebuild.
+  docker compose logs --tail=80 odysseus
+  goto :fail
+)
 
 echo.
 echo [+] Removing dangling Docker images...

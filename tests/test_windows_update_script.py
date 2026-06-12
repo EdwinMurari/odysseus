@@ -13,6 +13,9 @@ def test_windows_update_script_uses_safe_docker_update_flow():
     assert "where docker" in lowered
     assert "docker compose version" in lowered
     assert "git pull --ff-only" in lowered
-    assert "docker compose up -d --build" in lowered
+    assert "docker compose config --quiet" in lowered
+    assert "docker compose up -d --build --force-recreate" in lowered
+    assert "docker compose ps --status running odysseus" in lowered
+    assert "docker compose logs --tail=80 odysseus" in lowered
     assert "docker image prune -f" in lowered
     assert "pause" in lowered
