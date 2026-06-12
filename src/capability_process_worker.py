@@ -57,6 +57,7 @@ def run(spec_path: str) -> int:
         if name in os.environ:
             base_env[name] = os.environ[name]
     base_env["ODYSSEUS_CAPABILITY_RUN_ID"] = spec["run_id"]
+    base_env["ODYSSEUS_RUN_ID"] = spec["run_id"]
 
     started = datetime.now(timezone.utc).isoformat()
     try:
