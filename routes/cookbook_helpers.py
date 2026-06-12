@@ -54,6 +54,55 @@ _WINDOWS_LOCAL_DIR_RE = re.compile(r"^[A-Za-z]:[\\/](?:[\w. -]+(?:[\\/][\w. -]+)
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
+def _serve_command_requests_gpu(cmd: str | None) -> bool:
+    """Return whether a serve command explicitly requires GPU execution."""
+    text = str(cmd or "").strip().lower()
+    if not text:
+        return False
+    if re.search(r"(?:^|\s)(?:vllm(?:\s+serve)?|python\d*(?:\.\d+)?\s+-m\s+vllm)\b", text):
+        return True
+    if "sglang.launch_server" in text or re.search(r"(?:^|\s)sglang\s+serve\b", text):
+        return True
+    return bool(
+        re.search(
+            r"(?:--n[_-]gpu[_-]layers|-ngl|--gpu-layers)"
+            r"(?:\s+|=)(?:-1|[1-9]\d*)\b",
+            text,
+        )
+    )
+
+
+def _local_docker_gpu_passthrough_error(
+    cmd: str | None,
+    *,
+    remote_host: str | None = None,
+    environ=None,
+    path_exists=None,
+) -> str | None:
+    """Explain a local Docker GPU misconfiguration before CPU fallback starts."""
+    if remote_host or not _serve_command_requests_gpu(cmd):
+        return None
+
+    env = os.environ if environ is None else environ
+    exists = os.path.exists if path_exists is None else path_exists
+    if not exists("/.dockerenv"):
+        return None
+
+    nvidia_visible = str(env.get("NVIDIA_VISIBLE_DEVICES", "") or "").strip().lower()
+    has_nvidia = nvidia_visible not in {"", "none", "void"}
+    has_amd = exists("/dev/kfd")
+    if has_nvidia or has_amd:
+        return None
+
+    return (
+        "GPU serve requested, but this Odysseus container has no GPU passthrough. "
+        "Recreate it with the matching GPU Compose overlay. For NVIDIA: "
+        "`docker compose -f docker-compose.yml -f docker/gpu.nvidia.yml "
+        "up -d --build --force-recreate odysseus`. "
+        "Then verify `docker inspect odysseus-odysseus-1` shows a GPU DeviceRequest."
+    )
+
+
 def _git_bash_path(path: str) -> str:
     m = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
     if not m:

@@ -108,13 +108,15 @@ def test_nvidia_odysseus_adds_only_overlay(base):
     svc = standalone["services"][SERVICE]
     base_svc = base["services"][SERVICE]
 
-    # Base environment preserved, plus exactly the two NVIDIA variables.
+    # Base environment preserved, plus exactly the NVIDIA image contract.
     assert "NVIDIA_VISIBLE_DEVICES=all" in svc["environment"]
     assert "NVIDIA_DRIVER_CAPABILITIES=compute,utility" in svc["environment"]
+    assert "ODYSSEUS_REQUIRE_CUDA_LLAMA_SERVER=1" in svc["environment"]
     added_env = set(svc["environment"]) - set(base_svc["environment"])
     assert added_env == {
         "NVIDIA_VISIBLE_DEVICES=all",
         "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+        "ODYSSEUS_REQUIRE_CUDA_LLAMA_SERVER=1",
     }
 
     # deploy block is new and matches the overlay's GPU reservation exactly.

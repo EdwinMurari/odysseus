@@ -37,6 +37,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - ODYSSEUS_REQUIRE_CUDA_LLAMA_SERVER=1
     deploy:
       resources:
         reservations:

@@ -16,6 +16,23 @@ PGID="${PGID:-1000}"
 GOSU_BIN="$(command -v gosu)"
 PYTHON_BIN="$(command -v python)"
 
+# NVIDIA Compose builds promise a baked CUDA llama-server. Refuse to run a
+# stale/default image under that overlay: otherwise Cookbook silently enters
+# its source-build branch and the configuration mistake looks like a model
+# launch problem.
+if [ "${ODYSSEUS_REQUIRE_CUDA_LLAMA_SERVER:-0}" = "1" ]; then
+    if ! command -v llama-server >/dev/null 2>&1; then
+        echo >&2 "ERROR: NVIDIA Docker configuration requires baked llama-server, but this image does not contain it."
+        echo >&2 "Rebuild and recreate with the active NVIDIA Compose overlay:"
+        echo >&2 "  docker compose up -d --build --force-recreate odysseus"
+        exit 78
+    fi
+    if ! llama-server --version >/dev/null 2>&1; then
+        echo >&2 "ERROR: Baked llama-server exists but cannot start. Check bundled CUDA libraries and image build output."
+        exit 78
+    fi
+fi
+
 # Reuse an existing matching group/user if the host's UID/GID already
 # corresponds to one in /etc/passwd (e.g. when the image is rebuilt
 # and "odysseus" already exists at the same id). Otherwise create.

@@ -47,9 +47,8 @@ from routes.cookbook_helpers import (
     _append_vllm_linux_preflight_lines, _ollama_bind_from_cmd, _pip_install_fallback_chain,
     _pip_install_no_cache, _user_shell_path_bootstrap, _venv_safe_local_pip_install_cmd,
     _diagnose_serve_output, run_ssh_command_async,
-    _ollama_bind_from_cmd, _pip_install_fallback_chain, _pip_install_no_cache,
-    _user_shell_path_bootstrap, _venv_safe_local_pip_install_cmd,
     _normalize_llama_cpp_python_cache_types,
+    _local_docker_gpu_passthrough_error,
     ModelDownloadRequest, ServeRequest,
 )
 
@@ -1329,6 +1328,12 @@ def setup_cookbook_routes() -> APIRouter:
                 raise HTTPException(400, "Invalid pip package name")
         else:
             _validate_serve_model_id(req.repo_id)
+            gpu_passthrough_error = _local_docker_gpu_passthrough_error(
+                req.cmd,
+                remote_host=req.remote_host,
+            )
+            if gpu_passthrough_error:
+                return {"ok": False, "error": gpu_passthrough_error}
         TMUX_LOG_DIR.mkdir(parents=True, exist_ok=True)
         session_id = f"serve-{uuid.uuid4().hex[:8]}"
         remote = req.remote_host

@@ -16,6 +16,7 @@ from routes.cookbook_helpers import (
     _llama_cpp_rebuild_cmd,
     _append_vllm_linux_preflight_lines,
     _local_tooling_path_export,
+    _local_docker_gpu_passthrough_error,
     _pip_install_attempt,
     _pip_install_fallback_chain,
     _ollama_bind_from_cmd,
@@ -31,6 +32,58 @@ from routes.cookbook_helpers import (
     _shell_path,
     run_ssh_command_async,
 )
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "python3 -m llama_cpp.server --n_gpu_layers 99 --port 8000",
+        "llama-server -ngl 33 --port 8000",
+        "vllm serve org/model --port 8000",
+        "python3 -m sglang.launch_server --model-path org/model",
+    ],
+)
+def test_local_docker_gpu_serve_rejects_missing_passthrough(cmd):
+    error = _local_docker_gpu_passthrough_error(
+        cmd,
+        environ={},
+        path_exists=lambda path: path == "/.dockerenv",
+    )
+
+    assert error is not None
+    assert "no GPU passthrough" in error
+    assert "docker/gpu.nvidia.yml" in error
+
+
+def test_local_docker_cpu_serve_allows_missing_passthrough():
+    error = _local_docker_gpu_passthrough_error(
+        "python3 -m llama_cpp.server --n_gpu_layers 0 --port 8000",
+        environ={},
+        path_exists=lambda path: path == "/.dockerenv",
+    )
+
+    assert error is None
+
+
+def test_local_docker_gpu_serve_allows_nvidia_overlay():
+    error = _local_docker_gpu_passthrough_error(
+        "python3 -m llama_cpp.server --n_gpu_layers=99 --port 8000",
+        environ={"NVIDIA_VISIBLE_DEVICES": "all"},
+        path_exists=lambda path: path == "/.dockerenv",
+    )
+
+    assert error is None
+
+
+def test_remote_gpu_serve_does_not_require_local_passthrough():
+    error = _local_docker_gpu_passthrough_error(
+        "vllm serve org/model",
+        remote_host="gpu@example.test",
+        environ={},
+        path_exists=lambda path: path == "/.dockerenv",
+    )
+
+    assert error is None
 
 
 def test_safe_env_prefix_accepts_quoted_venv_path():
