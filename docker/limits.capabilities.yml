@@ -1,0 +1,26 @@
+# Memory ceilings for the optional capability workers. Only valid when
+# merged together with docker-compose.capabilities.example.yml (the services
+# below do not exist otherwise). dev-stack.ps1 includes this file
+# automatically when both Capabilities and Limits resolve to On.
+#
+# Workers call LLMs through the Odysseus model broker, so they need little
+# memory themselves. stock-research gets more headroom because it may load
+# local HF models into /data/models for retrieval.
+services:
+  pain-miner-capability:
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  pain-miner-postgres:
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  stock-research-capability:
+    deploy:
+      resources:
+        limits:
+          memory: 3g

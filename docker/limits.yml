@@ -1,0 +1,35 @@
+# Memory safety-net overlay for the core services, sized for this machine:
+# 32GB RAM Windows host, WSL2 capped at 20GB (see docker/wslconfig.example).
+# dev-stack.ps1 includes this file automatically when it exists; disable for
+# OOM debugging with `-Limits Off`.
+#
+# These are ceilings, not reservations — normal usage sits far below them.
+# The odysseus ceiling must stay generous: llama-server mmaps GGUF weights,
+# and resident pages count against the container's cgroup even when all
+# layers are offloaded to the GPU. 12g covers the app, a ~7.3GB chat GGUF,
+# and the embedding model with room to spare; page cache is reclaimed under
+# pressure rather than OOM-killing the process.
+services:
+  odysseus:
+    deploy:
+      resources:
+        limits:
+          memory: 12g
+
+  chromadb:
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  searxng:
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  ntfy:
+    deploy:
+      resources:
+        limits:
+          memory: 256m

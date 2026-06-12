@@ -1,0 +1,18 @@
+# WSL2 global memory cap for Docker Desktop. Without this file WSL2 may
+# balloon to ~50% of host RAM and hold it, starving Windows.
+#
+# Install:
+#   1. Copy this file to %USERPROFILE%\.wslconfig  (C:\Users\<you>\.wslconfig)
+#   2. Run:  wsl --shutdown
+#   3. Restart Docker Desktop.
+#
+# Sized for this machine: 32GB host. 20GB for WSL2/Docker leaves ~12GB for
+# Windows, the browser, and the WDDM desktop on the RTX 3080.
+[wsl2]
+memory=20GB
+# Set to physical core count minus 2-4 for Windows; adjust for your CPU.
+processors=12
+swap=8GB
+# Return freed memory to Windows instead of holding it (needs a recent WSL;
+# remove the line if `wsl --version` is older than 2.0).
+autoMemoryReclaim=gradual
