@@ -13,6 +13,12 @@ RUN apt-get update \
 RUN test -n "$CAPABILITY_PROJECT"
 WORKDIR /capability
 
+# Shared capability kit first: the capability project's pyproject depends on
+# odysseus-capability-kit, and pip satisfies that requirement from the
+# already-installed dist instead of an index lookup.
+COPY odysseus/libs/capability_kit /opt/capability_kit
+RUN pip install --no-cache-dir "/opt/capability_kit[worker]"
+
 COPY ${CAPABILITY_PROJECT}/ /capability/
 RUN pip install --no-cache-dir . fastapi uvicorn pyyaml
 

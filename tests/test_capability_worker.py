@@ -1,5 +1,3 @@
-import pytest
-
 from integrations.capabilities import worker
 
 
@@ -30,11 +28,9 @@ def test_worker_emits_explicit_false_boolean_flag(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
-async def test_worker_readiness_reports_status_without_returning_secrets(
+def test_worker_readiness_reports_status_without_returning_secrets(
     monkeypatch,
 ):
-    monkeypatch.setattr(worker, "TOKEN", "")
     monkeypatch.setattr(
         worker,
         "READINESS",
@@ -47,7 +43,7 @@ async def test_worker_readiness_reports_status_without_returning_secrets(
     )
     monkeypatch.setenv("SOURCE_API_TOKEN", "super-secret")
 
-    result = await worker.readiness()
+    result = worker.readiness_report()
 
     assert result == {
         "ready": True,
@@ -62,11 +58,9 @@ async def test_worker_readiness_reports_status_without_returning_secrets(
     assert "super-secret" not in str(result)
 
 
-@pytest.mark.asyncio
-async def test_worker_readiness_tracks_source_credentials_independently(
+def test_worker_readiness_tracks_source_credentials_independently(
     monkeypatch,
 ):
-    monkeypatch.setattr(worker, "TOKEN", "")
     monkeypatch.setattr(
         worker,
         "READINESS",
@@ -90,7 +84,7 @@ async def test_worker_readiness_tracks_source_credentials_independently(
     monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("REDDIT_USER_AGENT", raising=False)
 
-    result = await worker.readiness()
+    result = worker.readiness_report()
 
     assert result == {
         "ready": False,

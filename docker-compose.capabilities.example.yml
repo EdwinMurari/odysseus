@@ -67,16 +67,18 @@ services:
     restart: unless-stopped
 
   stock-research-capability:
-    # Native FastAPI worker (implements /v1/runs + /v1/readiness itself),
-    # so it builds from its own Dockerfile rather than the generic
-    # capability-worker image. Secrets live ONLY in this container; the
-    # registry uses `probe: worker` to surface their status in the UI.
+    # Native FastAPI worker: mounts the shared run-lifecycle router from
+    # odysseus-capability-kit and adds its retrieval endpoints (/v1/search,
+    # /v1/ask). Build context is the repo root so the kit can be installed
+    # into the image. Secrets live ONLY in this container; the registry
+    # uses `probe: worker` to surface their status in the UI.
     build:
-      context: ${ODYSSEUS_CAPABILITY_BUILD_ROOT:-..}/stock-research
-      dockerfile: Dockerfile
+      context: ${ODYSSEUS_CAPABILITY_BUILD_ROOT:-..}
+      dockerfile: stock-research/Dockerfile
     environment:
       - STOCK_RESEARCH_CAPABILITY_TOKEN=${STOCK_RESEARCH_CAPABILITY_TOKEN:?set STOCK_RESEARCH_CAPABILITY_TOKEN}
-      - EDGAR_USER_AGENT=${EDGAR_USER_AGENT:?set EDGAR_USER_AGENT as "name email"}
+      - CAPABILITY_CONTACT=${CAPABILITY_CONTACT:?set CAPABILITY_CONTACT as "Your Name your@email"}
+      - EDGAR_USER_AGENT=${EDGAR_USER_AGENT:-}
       - FRED_API_KEY=${FRED_API_KEY:-}
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - FINRA_CLIENT_ID=${FINRA_CLIENT_ID:-}

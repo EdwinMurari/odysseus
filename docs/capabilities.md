@@ -256,11 +256,20 @@ Start response:
 ```
 
 Status is `queued`, `running`, `success`, `error`, or `cancelled`. A successful
-terminal response includes `result` using the contract above.
+terminal response includes `result` using the contract above. The log endpoint
+returns `{"id": ..., "output": "<last N lines>"}` — `output` is the key the
+runner reads. Workers also expose `GET /v1/readiness` (Bearer-authenticated
+dependency report) and an unauthenticated `GET /healthz`.
 
-The reference implementation is `integrations/capabilities/worker.py`. It uses
-fixed argv, validates inputs, persists state, captures combined stdout/stderr,
-enforces a timeout, and terminates the process group on cancellation.
+The protocol surface is single-sourced in `libs/capability_kit`
+(`capability_kit.worker.create_run_lifecycle_router`): constant-time bearer
+auth, run stores, status/log/cancel/readiness endpoints, and the guarded
+cancel/finish transition. Workers plug in an executor (subprocess, thread).
+
+The reference implementation is `integrations/capabilities/worker.py`. It
+mounts the kit router with a subprocess executor: fixed argv, validated
+inputs, persisted state, combined stdout/stderr capture, a timeout, and
+process-group termination on cancellation.
 
 ## Native process transport
 
