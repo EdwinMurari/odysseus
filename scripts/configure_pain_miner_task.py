@@ -39,7 +39,7 @@ def main() -> int:
 
     verification_input = {
         "since": "1d",
-        "sources": "g2",
+        "sources": "hn",
         "report": "/data/reports/pain-miner-smoke.md",
         "refresh": False,
         "max_items": 5,
@@ -67,7 +67,10 @@ def main() -> int:
 
     production_input = {
         "since": "7d",
-        "sources": "hn,reddit,austender,g2",
+        "sources": (
+            "hn,reddit,austender,austender_ocds,g2,github,"
+            "appstore,stackexchange,bluesky,rss"
+        ),
         "report": "/data/reports/pain-miner-weekly.md",
         "refresh": True,
     }

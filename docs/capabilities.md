@@ -325,7 +325,9 @@ business logic.
 
 ## Pain Miner
 
-Pain Miner implements the full orchestrator and deterministic digest renderer:
+Pain Miner implements the full orchestrator and deterministic digest renderer
+for Hacker News, Reddit, AusTender ATM and OCDS, G2, GitHub Issues, App Store
+reviews, Stack Exchange, Bluesky, and configured RSS/Atom feeds:
 
 ```text
 painminer run --since 7d
@@ -333,7 +335,10 @@ painminer run --since 7d
 
 The Compose overlay runs it without Gemini or Anthropic keys. Configure enabled
 Odysseus endpoint/models for the `utility` and `default` settings used by the
-two model roles before running against signal-bearing data.
+two model roles before running against signal-bearing data. G2 readiness
+depends only on `APIFY_TOKEN`; Reddit readiness independently requires all
+three Reddit OAuth variables. Sources without configured prerequisites can be
+excluded without blocking the remaining source set.
 
 Verified through the authenticated Docker APIs:
 

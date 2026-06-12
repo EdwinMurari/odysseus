@@ -30,15 +30,25 @@ capabilities:
       documentation_url: /docs/capabilities#pain-miner
     dependencies:
       - id: apify
-        label: Apify sources
+        label: Apify
         kind: integration
         probe: worker
         env: APIFY_TOKEN
         required: false
         input: sources
-        values: [reddit, g2]
+        values: [g2]
         required_when_selected: true
-        missing_message: Reddit and G2 collection are unavailable.
+        missing_message: G2 collection is unavailable.
+      - id: reddit
+        label: Reddit API
+        kind: integration
+        probe: worker
+        env: REDDIT_CLIENT_ID
+        required: false
+        input: sources
+        values: [reddit]
+        required_when_selected: true
+        missing_message: Reddit collection is unavailable.
     progress_phases: [collect, tag, cluster, report]
     idempotent: true
     transport:
@@ -56,8 +66,8 @@ capabilities:
         type: string
         label: Sources
         group: Evidence
-        description: Comma-separated subset of hn, reddit, austender, and g2.
-        default: hn,reddit,austender,g2
+        description: Comma-separated subset of the supported Pain Miner sources.
+        default: hn,reddit,austender,austender_ocds,g2,github,appstore,stackexchange,bluesky,rss
       report:
         type: string
         label: Report path
