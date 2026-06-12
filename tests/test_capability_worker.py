@@ -60,3 +60,46 @@ async def test_worker_readiness_reports_status_without_returning_secrets(
         ],
     }
     assert "super-secret" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_worker_readiness_tracks_source_credentials_independently(
+    monkeypatch,
+):
+    monkeypatch.setattr(worker, "TOKEN", "")
+    monkeypatch.setattr(
+        worker,
+        "READINESS",
+        {
+            "apify": {
+                "env": ["APIFY_TOKEN"],
+                "missing_message": "G2 collection is unavailable.",
+            },
+            "reddit": {
+                "env": [
+                    "REDDIT_CLIENT_ID",
+                    "REDDIT_CLIENT_SECRET",
+                    "REDDIT_USER_AGENT",
+                ],
+                "missing_message": "Reddit collection is unavailable.",
+            },
+        },
+    )
+    monkeypatch.setenv("APIFY_TOKEN", "configured")
+    monkeypatch.delenv("REDDIT_CLIENT_ID", raising=False)
+    monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("REDDIT_USER_AGENT", raising=False)
+
+    result = await worker.readiness()
+
+    assert result == {
+        "ready": False,
+        "dependencies": [
+            {"id": "apify", "available": True, "detail": "Available"},
+            {
+                "id": "reddit",
+                "available": False,
+                "detail": "Reddit collection is unavailable.",
+            },
+        ],
+    }

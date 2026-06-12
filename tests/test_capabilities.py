@@ -351,6 +351,40 @@ async def test_process_capability_persists_run_and_imports_report(
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_process_capability_receives_durable_odysseus_run_id(
+    tmp_path, monkeypatch
+):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'process-run-id.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    test_session = sessionmaker(bind=engine)
+
+    import src.capability_runner as runner
+
+    monkeypatch.setattr(runner, "SessionLocal", test_session)
+    monkeypatch.setattr(runner, "_RUNS_DIR", tmp_path / "runs")
+
+    script = (
+        "import json,os; "
+        "print(json.dumps({'summary':os.environ.get('ODYSSEUS_RUN_ID','missing')}))"
+    )
+    config = tmp_path / "capabilities.yaml"
+    _write_registry(config, tmp_path, [sys.executable, "-c", script])
+    manager = CapabilityManager(CapabilityRegistry(str(config)))
+    await manager.start()
+    try:
+        created = await manager.create_run("test-report", {}, "alice")
+        completed = await manager.wait(created["id"], timeout=15)
+    finally:
+        await manager.stop()
+
+    assert completed["status"] == "success"
+    assert completed["summary"] == created["id"]
+
+
 def test_readiness_blocks_unresolved_model_roles_and_defaults_are_owner_scoped(
     tmp_path, monkeypatch
 ):
@@ -631,7 +665,62 @@ def test_pain_miner_setup_never_runs_or_mutates_production_task_for_smoke():
     assert '"/api/capabilities/pain-miner/runs"' in source
     assert "pain-miner-smoke.md" in source
     assert "pain-miner-weekly.md" in source
+    assert '"sources": "hn"' in source
     assert 'f"/api/tasks/{task_id}/run"' not in source
+
+
+def test_pain_miner_registry_and_compose_cover_the_full_source_contract():
+    import yaml
+
+    registry = yaml.safe_load(
+        Path("config/capabilities.example.yaml").read_text(encoding="utf-8")
+    )
+    capability = next(
+        item for item in registry["capabilities"] if item["id"] == "pain-miner"
+    )
+    expected_sources = {
+        "hn",
+        "reddit",
+        "austender",
+        "austender_ocds",
+        "g2",
+        "github",
+        "appstore",
+        "stackexchange",
+        "bluesky",
+        "rss",
+    }
+    configured_sources = {
+        item.strip() for item in capability["inputs"]["sources"]["default"].split(",")
+    }
+    dependencies = {item["id"]: item for item in capability["dependencies"]}
+
+    assert configured_sources == expected_sources
+    assert dependencies["apify"]["values"] == ["g2"]
+    assert dependencies["reddit"]["values"] == ["reddit"]
+
+    compose = Path("docker-compose.capabilities.example.yml").read_text(
+        encoding="utf-8"
+    )
+    assert ",".join(
+        [
+            "hn",
+            "reddit",
+            "austender",
+            "austender_ocds",
+            "g2",
+            "github",
+            "appstore",
+            "stackexchange",
+            "bluesky",
+            "rss",
+        ]
+    ) in compose
+    reddit_readiness = (
+        '"reddit":{"env":["REDDIT_CLIENT_ID","REDDIT_CLIENT_SECRET",'
+        '"REDDIT_USER_AGENT"]'
+    )
+    assert reddit_readiness in compose
 
 
 def test_stock_research_setup_smokes_before_configuring_production_task():
