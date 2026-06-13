@@ -22,19 +22,19 @@ services:
       dockerfile: odysseus/docker/capability-worker.Dockerfile
       args:
         CAPABILITY_PROJECT: pain-miner
+    env_file:
+      - path: ../pain-miner/.env
+        required: false
+        format: raw
     environment:
       - CAPABILITY_TOKEN=${PAIN_MINER_CAPABILITY_TOKEN:?set PAIN_MINER_CAPABILITY_TOKEN}
       - CAPABILITY_COMMAND_JSON=["painminer","run"]
-      - CAPABILITY_INPUTS_JSON={"since":{"type":"string","default":"7d","flag":"--since"},"sources":{"type":"string","default":"hn,reddit,austender,austender_ocds,g2,github,appstore,stackexchange,bluesky,rss","flag":"--sources"},"report":{"type":"string","default":"/data/reports/pain-miner.md","flag":"--report"},"refresh":{"type":"boolean","default":true,"flag":"--refresh","false_flag":"--no-refresh"},"max_items":{"type":"integer","flag":"--max-items"}}
+      - CAPABILITY_INPUTS_JSON={"since":{"type":"string","default":"7d","flag":"--since"},"sources":{"type":"array","default":["hn","reddit","austender","austender_ocds","g2","github","appstore","stackexchange","bluesky","rss"],"flag":"--sources"},"refresh":{"type":"boolean","default":true,"flag":"--refresh","false_flag":"--no-refresh"},"max_items":{"type":"integer","flag":"--max-items"}}
       - CAPABILITY_PASS_ENV_JSON=["DATABASE_URL","APIFY_TOKEN","REDDIT_CLIENT_ID","REDDIT_CLIENT_SECRET","REDDIT_USER_AGENT","DIGEST_DIR","PAINMINER_CONFIG","PAINMINER_REPORT_ROOTS_JSON","PAINMINER_LLM_MODE","ODYSSEUS_MODEL_BROKER_URL","ODYSSEUS_CAPABILITY_MODEL_TOKEN","PAINMINER_TAG_MODEL_ROLE","PAINMINER_CLUSTER_MODEL_ROLE"]
       - CAPABILITY_READINESS_JSON={"apify":{"env":["APIFY_TOKEN"],"missing_message":"G2 collection is unavailable."},"reddit":{"env":["REDDIT_CLIENT_ID","REDDIT_CLIENT_SECRET","REDDIT_USER_AGENT"],"missing_message":"Reddit collection is unavailable."}}
       - CAPABILITY_TIMEOUT_SECONDS=1800
       - CAPABILITY_REPORT_ROOTS_JSON=["/data/reports"]
       - DATABASE_URL=postgresql://painminer:painminer@pain-miner-postgres:5432/painminer
-      - APIFY_TOKEN=${APIFY_TOKEN:-}
-      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID:-}
-      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET:-}
-      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-}
       - DIGEST_DIR=/data/reports
       - PAINMINER_CONFIG=/capability/config.yaml
       - PAINMINER_REPORT_ROOTS_JSON=["/data/reports"]
@@ -75,18 +75,14 @@ services:
     build:
       context: ${ODYSSEUS_CAPABILITY_BUILD_ROOT:-..}
       dockerfile: stock-research/Dockerfile
+    env_file:
+      - path: ../stock-research/.env
+        required: false
+        format: raw
     environment:
       - STOCK_RESEARCH_CAPABILITY_TOKEN=${STOCK_RESEARCH_CAPABILITY_TOKEN:?set STOCK_RESEARCH_CAPABILITY_TOKEN}
-      - CAPABILITY_CONTACT=${CAPABILITY_CONTACT:?set CAPABILITY_CONTACT as "Your Name your@email"}
-      - EDGAR_USER_AGENT=${EDGAR_USER_AGENT:-}
-      - FRED_API_KEY=${FRED_API_KEY:-}
-      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
-      - FINRA_CLIENT_ID=${FINRA_CLIENT_ID:-}
-      - FINRA_CLIENT_SECRET=${FINRA_CLIENT_SECRET:-}
-      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID:-}
-      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET:-}
-      - REDDIT_USER_AGENT=${REDDIT_USER_AGENT:-}
       - STOCK_RESEARCH_DATA_DIR=/data
+      - STOCK_RESEARCH_CONFIG_DIR=/app/config
       - HF_HOME=/data/models
       - ODYSSEUS_MODEL_BROKER_URL=http://odysseus:7000
       - ODYSSEUS_CAPABILITY_MODEL_TOKEN=${ODYSSEUS_CAPABILITY_MODEL_TOKEN:?set ODYSSEUS_CAPABILITY_MODEL_TOKEN}

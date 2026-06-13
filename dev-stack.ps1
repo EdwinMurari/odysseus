@@ -8,6 +8,7 @@
   .\dev-stack.ps1 rebuild -Scope All
   .\dev-stack.ps1 restart
   .\dev-stack.ps1 logs
+  .\dev-stack.ps1 logs -Follow
 #>
 param(
     [Parameter(Position = 0)]
@@ -28,7 +29,13 @@ param(
     [ValidateSet("App", "All")]
     [string]$Scope = "App",
 
-    [int]$ReadyTimeoutSeconds = 180
+    [ValidateRange(1, 86400)]
+    [int]$ReadyTimeoutSeconds = 180,
+
+    [ValidateRange(1, 10000)]
+    [int]$LogTail = 200,
+
+    [switch]$Follow
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,6 +63,31 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) {
         throw "$Command failed with exit code $LASTEXITCODE"
     }
+}
+
+function Invoke-Compose {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    Invoke-Checked -Command "docker" -Arguments (@("compose") + $script:ComposeArgs + $Arguments)
+}
+
+function Show-ComposeLogs {
+    param(
+        [string[]]$Services = @(),
+        [int]$Tail = $LogTail,
+        [switch]$FollowOutput
+    )
+
+    $arguments = @("logs", "--tail=$Tail")
+    if ($FollowOutput) {
+        $arguments += "--follow"
+    }
+    $arguments += $Services
+
+    Invoke-Compose -Arguments $arguments
 }
 
 function Get-DotEnvValue([string]$Name, [string]$Default) {
@@ -229,17 +261,17 @@ function Wait-OdysseusReady {
         Start-Sleep -Seconds 3
     } while ((Get-Date) -lt $deadline)
 
-    & docker compose @script:ComposeArgs logs --tail=120 odysseus
+    Show-ComposeLogs -Services @("odysseus") -Tail 120
     throw "Odysseus did not become ready within $ReadyTimeoutSeconds seconds."
 }
 
 function Confirm-Gpu([string]$GpuMode) {
     if ($GpuMode -eq "Nvidia") {
         Write-Step "Verifying NVIDIA GPU passthrough"
-        Invoke-Checked docker compose @script:ComposeArgs exec -T odysseus nvidia-smi -L
+        Invoke-Compose -Arguments @("exec", "-T", "odysseus", "nvidia-smi", "-L")
     } elseif ($GpuMode -eq "Amd") {
         Write-Step "Verifying AMD GPU passthrough"
-        Invoke-Checked docker compose @script:ComposeArgs exec -T odysseus sh -lc "test -e /dev/kfd && test -d /dev/dri"
+        Invoke-Compose -Arguments @("exec", "-T", "odysseus", "sh", "-lc", "test -e /dev/kfd && test -d /dev/dri")
     }
 }
 
@@ -249,7 +281,7 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 
 Start-DockerEngine
 Show-WslConfigHint
-Invoke-Checked docker compose version
+Invoke-Checked -Command "docker" -Arguments @("compose", "version")
 
 $GpuMode = Resolve-GpuMode
 $CapabilitiesMode = Resolve-CapabilitiesMode
@@ -258,42 +290,47 @@ $script:ComposeArgs = Get-ComposeArguments $GpuMode $CapabilitiesMode $LimitsMod
 
 Write-Host "GPU: $GpuMode | Capabilities: $CapabilitiesMode | Limits: $LimitsMode | Rebuild scope: $Scope"
 Write-Step "Validating effective Compose configuration"
-Invoke-Checked docker compose @script:ComposeArgs config --quiet
+Invoke-Compose -Arguments @("config", "--quiet")
 
 switch ($Action) {
     "up" {
         Write-Step "Starting the existing stack"
-        Invoke-Checked docker compose @script:ComposeArgs up -d --remove-orphans
+        Invoke-Compose -Arguments @("up", "-d", "--remove-orphans")
         Wait-OdysseusReady
         Confirm-Gpu $GpuMode
     }
     "rebuild" {
         Write-Step "Rebuilding Odysseus"
         if ($Scope -eq "All") {
-            Invoke-Checked docker compose @script:ComposeArgs up -d --build --force-recreate --remove-orphans
+            Invoke-Compose -Arguments @("up", "-d", "--build", "--force-recreate", "--remove-orphans")
         } else {
             # Start dependencies first, then rebuild only the application image.
-            Invoke-Checked docker compose @script:ComposeArgs up -d --remove-orphans
-            Invoke-Checked docker compose @script:ComposeArgs build odysseus
-            Invoke-Checked docker compose @script:ComposeArgs up -d --force-recreate --no-deps odysseus
+            Invoke-Compose -Arguments @("up", "-d", "--remove-orphans")
+            Invoke-Compose -Arguments @("build", "odysseus")
+            Invoke-Compose -Arguments @("up", "-d", "--force-recreate", "--no-deps", "odysseus")
         }
         Wait-OdysseusReady
         Confirm-Gpu $GpuMode
     }
     "restart" {
         Write-Step "Restarting containers without rebuilding images"
-        Invoke-Checked docker compose @script:ComposeArgs restart
+        Invoke-Compose -Arguments @("restart")
         Wait-OdysseusReady
         Confirm-Gpu $GpuMode
     }
     "status" {
-        Invoke-Checked docker compose @script:ComposeArgs ps
+        Invoke-Compose -Arguments @("ps")
     }
     "logs" {
-        & docker compose @script:ComposeArgs logs --tail=200 -f
+        if ($Follow) {
+            Write-Step "Following live container logs; press Ctrl+C to stop"
+        } else {
+            Write-Step "Showing the latest $LogTail log lines"
+        }
+        Show-ComposeLogs -Tail $LogTail -FollowOutput:$Follow
     }
     "down" {
         Write-Step "Stopping containers while preserving all volumes and caches"
-        Invoke-Checked docker compose @script:ComposeArgs down
+        Invoke-Compose -Arguments @("down")
     }
 }

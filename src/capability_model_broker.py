@@ -143,6 +143,24 @@ def _parse_json_response(text: str) -> Any:
     raise CapabilityModelBrokerError("Model returned invalid JSON")
 
 
+def _parse_and_validate(text: str, schema: dict[str, Any]) -> tuple[Any, str | None]:
+    """Parse the raw model reply and validate it against the schema.
+
+    Returns ``(value, None)`` on success or ``(None, error_message)`` when the
+    reply is unusable. The error message is suitable both for the eventual
+    broker error and for feeding back to the model in a repair attempt.
+    """
+    try:
+        value = _parse_json_response(text)
+    except CapabilityModelBrokerError as exc:
+        return None, str(exc)
+    try:
+        Draft202012Validator(schema).validate(value)
+    except ValidationError as exc:
+        return None, f"Model response failed schema validation: {exc.message}"
+    return value, None
+
+
 async def invoke_structured_model(
     context: BrokerContext, prompt: str, schema: dict[str, Any]
 ) -> dict[str, Any]:
@@ -167,34 +185,55 @@ async def invoke_structured_model(
         },
         {"role": "user", "content": prompt},
     ]
-    try:
-        raw = await _call_while_run_active(
-            context,
-            url=url,
-            model=model,
-            messages=messages,
-            temperature=0,
-            max_tokens=context.role.max_tokens,
-            headers=headers,
-            timeout=context.role.timeout_seconds,
-            max_retries=1,
-            prompt_type=f"capability:{context.role.name}",
-            session_id=context.run_id,
-        )
-    except CapabilityModelAuthorizationError:
-        raise
-    except Exception as exc:
-        raise CapabilityModelBrokerError(
-            f"Model invocation failed: {type(exc).__name__}: {exc}"
-        ) from exc
 
-    value = _parse_json_response(raw)
-    try:
-        Draft202012Validator(schema).validate(value)
-    except ValidationError as exc:
-        raise CapabilityModelBrokerError(
-            f"Model response failed schema validation: {exc.message}"
-        ) from None
+    async def _invoke(call_messages: list[dict[str, str]]) -> str:
+        try:
+            return await _call_while_run_active(
+                context,
+                url=url,
+                model=model,
+                messages=call_messages,
+                temperature=0,
+                max_tokens=context.role.max_tokens,
+                headers=headers,
+                timeout=context.role.timeout_seconds,
+                max_retries=1,
+                prompt_type=f"capability:{context.role.name}",
+                session_id=context.run_id,
+            )
+        except CapabilityModelAuthorizationError:
+            raise
+        except Exception as exc:
+            raise CapabilityModelBrokerError(
+                f"Model invocation failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    raw = await _invoke(messages)
+    value, error = _parse_and_validate(raw, schema)
+    if error is not None:
+        # One corrective round before failing the call. Small utility models
+        # routinely miss a required key or wrap the value on the first try;
+        # the deep-research engine recovers from this class of error with
+        # tolerant parsing and re-asks, and capability workers deserve the
+        # same resilience. Feeding the validator message back fixes the
+        # majority of cases without weakening the schema contract — a reply
+        # that still doesn't validate is rejected exactly as before.
+        repair_messages = messages + [
+            {"role": "assistant", "content": raw},
+            {
+                "role": "user",
+                "content": (
+                    f"Your previous reply was rejected: {error}. "
+                    "Reply again with exactly one JSON value that validates "
+                    "against the JSON Schema in the system message. Output "
+                    "only the corrected JSON — no fences, no commentary."
+                ),
+            },
+        ]
+        raw = await _invoke(repair_messages)
+        value, error = _parse_and_validate(raw, schema)
+    if error is not None:
+        raise CapabilityModelBrokerError(error)
     return {
         "data": value,
         "provenance": {

@@ -170,6 +170,9 @@ _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/upload",          # large files
     "/api/image",           # diffusion proxies (inpaint/harmonize/upscale/etc.) — own 120s httpx timeout
     "/api/memory/audit",    # retains own 120s LLM inactivity timeout
+    "/api/capability-models",  # broker enforces role.timeout_seconds itself and
+                               # cancels with the run; the 45s wall otherwise
+                               # 504s every slow local-model structured call
 )
 
 
@@ -210,6 +213,7 @@ if AUTH_ENABLED:
         "/api/auth/settings",
         "/api/auth/integrations/presets",
         "/api/health",
+        "/api/ready",
         "/api/version",
         # Authenticated independently by a scoped capability-worker bearer
         # token, then authorized against an active durable capability run.

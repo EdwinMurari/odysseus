@@ -18,11 +18,27 @@ from core.database import (
     Document,
 )
 from src.capabilities import CapabilityConfigError, CapabilityRegistry
-from src.capability_runner import CapabilityManager
+from src.capability_runner import CapabilityManager, capability_run_to_dict
 from src.agent_tools import TOOL_TAGS
 from src.task_scheduler import TaskScheduler
 from src.tool_schemas import FUNCTION_TOOL_SCHEMAS
 from routes.capability_routes import setup_capability_routes
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_active_capability_run_has_no_terminal_outcome(status):
+    run = CapabilityRun(
+        id=f"{status}-run",
+        capability_id="test-report",
+        transport="http",
+        status=status,
+        input_json="{}",
+    )
+
+    payload = capability_run_to_dict(run)
+
+    assert payload["status"] == status
+    assert payload["outcome"] is None
 
 
 def _write_registry(path: Path, cwd: Path, command: list[str]) -> None:
@@ -690,32 +706,28 @@ def test_pain_miner_registry_and_compose_cover_the_full_source_contract():
         "bluesky",
         "rss",
     }
-    configured_sources = {
-        item.strip() for item in capability["inputs"]["sources"]["default"].split(",")
-    }
+    configured_sources = set(capability["inputs"]["sources"]["default"])
     dependencies = {item["id"]: item for item in capability["dependencies"]}
 
     assert configured_sources == expected_sources
+    assert capability["inputs"]["sources"]["type"] == "array"
+    assert "report" not in capability["inputs"]
     assert dependencies["apify"]["values"] == ["g2"]
     assert dependencies["reddit"]["values"] == ["reddit"]
+    dependency_sources = {
+        value
+        for dependency in dependencies.values()
+        for value in dependency.get("values", [])
+    }
+    assert expected_sources == dependency_sources
 
     compose = Path("docker-compose.capabilities.example.yml").read_text(
         encoding="utf-8"
     )
-    assert ",".join(
-        [
-            "hn",
-            "reddit",
-            "austender",
-            "austender_ocds",
-            "g2",
-            "github",
-            "appstore",
-            "stackexchange",
-            "bluesky",
-            "rss",
-        ]
-    ) in compose
+    assert '"sources":{"type":"array"' in compose
+    assert '"report":' not in compose
+    assert "path: ../pain-miner/.env" in compose
+    assert compose.count("format: raw") == 2
     reddit_readiness = (
         '"reddit":{"env":["REDDIT_CLIENT_ID","REDDIT_CLIENT_SECRET",'
         '"REDDIT_USER_AGENT"]'
@@ -745,6 +757,10 @@ def test_stock_research_compose_uses_broker_without_provider_secrets():
     assert "ODYSSEUS_MODEL_BROKER_URL=http://odysseus:7000" in block
     assert "ODYSSEUS_CAPABILITY_MODEL_TOKEN=" in block
     assert "STOCK_RESEARCH_SUMMARIZE_MODEL_ROLE=stockresearch.summarize" in block
+    assert "path: ../stock-research/.env" in block
+    assert "STOCK_RESEARCH_CONFIG_DIR=/app/config" in block
+    assert "FRED_API_KEY=${" not in block
+    assert "FINNHUB_API_KEY=${" not in block
     assert "GOOGLE_API_KEY" not in block
     assert "ANTHROPIC_API_KEY" not in block
     assert "OPENAI_API_KEY" not in block
@@ -762,6 +778,11 @@ def test_capability_ui_is_registry_driven_and_has_no_pain_miner_branch():
     assert "Inputs and provenance" in source
     assert "data-export-document" in source
     assert "data-open-task" in source
+    assert "\x00" not in source
+    assert "if (fp === _fpCatalog) return" in source
+    assert "if (fp !== _fpStructure)" in source
+    assert "syncRuns(item)" in source
+    assert "button.disabled = !available && !active" in source
 
 
 def test_http_progress_snapshot_is_persisted(tmp_path, monkeypatch):

@@ -26,7 +26,10 @@ Commands:
 .\dev-stack.ps1 restart
 
 .\dev-stack.ps1 status
+# Bounded snapshot; exits after printing the latest 200 lines
 .\dev-stack.ps1 logs
+# Explicit live stream; runs until Ctrl+C
+.\dev-stack.ps1 logs -Follow
 .\dev-stack.ps1 down
 ```
 

@@ -172,6 +172,89 @@ async def test_structured_model_call_resolves_owner_and_returns_provenance(
 
 
 @pytest.mark.asyncio
+async def test_structured_model_call_repairs_invalid_first_reply(tmp_path, monkeypatch):
+    """A reply that fails validation gets one corrective round before failing."""
+    config = tmp_path / "capabilities.yaml"
+    _write_registry(config)
+    registry = CapabilityRegistry(str(config))
+    factory = _session(tmp_path, monkeypatch)
+    _add_run(factory)
+    context = authorize_broker_call(registry, "run-1", "painminer.tag")
+
+    import src.capability_model_broker as broker
+
+    monkeypatch.setattr(
+        broker,
+        "resolve_endpoint",
+        lambda *args, **kwargs: ("http://model", "model-1", {}),
+    )
+
+    calls = []
+
+    async def flaky_call(url, model, messages, **kwargs):
+        calls.append(messages)
+        if len(calls) == 1:
+            return '{"wrong_key": "value"}'
+        return '{"answer": "repaired"}'
+
+    monkeypatch.setattr(broker, "llm_call_async", flaky_call)
+
+    result = await invoke_structured_model(
+        context,
+        "prompt",
+        {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    )
+
+    assert result["data"] == {"answer": "repaired"}
+    assert len(calls) == 2
+    # The repair round feeds back the rejected reply and the validator error.
+    assert calls[1][-2]["content"] == '{"wrong_key": "value"}'
+    assert "answer" in calls[1][-1]["content"]
+    assert "rejected" in calls[1][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_structured_model_call_fails_after_single_repair_attempt(
+    tmp_path, monkeypatch
+):
+    """A reply that still fails validation after one repair is rejected."""
+    config = tmp_path / "capabilities.yaml"
+    _write_registry(config)
+    registry = CapabilityRegistry(str(config))
+    factory = _session(tmp_path, monkeypatch)
+    _add_run(factory)
+    context = authorize_broker_call(registry, "run-1", "painminer.tag")
+
+    import src.capability_model_broker as broker
+
+    monkeypatch.setattr(
+        broker,
+        "resolve_endpoint",
+        lambda *args, **kwargs: ("http://model", "model-1", {}),
+    )
+
+    calls = []
+
+    async def stubborn_call(*args, **kwargs):
+        calls.append(1)
+        return "not json at all"
+
+    monkeypatch.setattr(broker, "llm_call_async", stubborn_call)
+
+    with pytest.raises(CapabilityModelBrokerError, match="invalid JSON"):
+        await invoke_structured_model(
+            context,
+            "prompt",
+            {"type": "object", "properties": {}},
+        )
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_structured_model_call_rejects_invalid_model_json(tmp_path, monkeypatch):
     config = tmp_path / "capabilities.yaml"
     _write_registry(config)

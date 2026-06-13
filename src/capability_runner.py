@@ -68,8 +68,8 @@ def _run_to_dict(run: CapabilityRun, include_result: bool = True) -> dict[str, A
     warnings = result_payload.get("warnings")
     if not isinstance(warnings, list):
         warnings = []
-    outcome = result_payload.get("outcome")
-    if not outcome:
+    outcome = result_payload.get("outcome") if run.status in _TERMINAL else None
+    if run.status in _TERMINAL and not outcome:
         metrics = result_payload.get("metrics") or {}
         finding_keys = ("findings", "clusters", "results", "matches")
         has_zero_findings = any(

@@ -49,6 +49,62 @@ capabilities:
         values: [reddit]
         required_when_selected: true
         missing_message: Reddit collection is unavailable.
+      - id: hn
+        label: Hacker News
+        kind: integration
+        required: false
+        input: sources
+        values: [hn]
+        missing_message: Hacker News is always available (public API).
+      - id: austender
+        label: AusTender
+        kind: integration
+        required: false
+        input: sources
+        values: [austender]
+        missing_message: AusTender is always available (public API).
+      - id: austender_ocds
+        label: AusTender OCDS
+        kind: integration
+        required: false
+        input: sources
+        values: [austender_ocds]
+        missing_message: AusTender OCDS is always available (public API).
+      - id: github
+        label: GitHub Issues
+        kind: integration
+        required: false
+        input: sources
+        values: [github]
+        missing_message: GitHub Issues is always available (public API).
+      - id: appstore
+        label: App Store
+        kind: integration
+        required: false
+        input: sources
+        values: [appstore]
+        missing_message: App Store reviews is always available (public API).
+      - id: stackexchange
+        label: Stack Exchange
+        kind: integration
+        required: false
+        input: sources
+        values: [stackexchange]
+        missing_message: Stack Exchange is always available (public API).
+      - id: bluesky
+        label: Bluesky
+        kind: integration
+        required: false
+        input: sources
+        values: [bluesky]
+        missing_message: Bluesky is always available (public API).
+      - id: rss
+        label: RSS Feeds
+        kind: integration
+        required: false
+        input: sources
+        values: [rss]
+        missing_message: RSS feeds is always available (public feeds).
     progress_phases: [collect, tag, cluster, report]
     idempotent: true
     transport:
@@ -63,18 +119,11 @@ capabilities:
         description: Lookback window accepted by painminer, such as 7d.
         default: 7d
       sources:
-        type: string
+        type: array
         label: Sources
         group: Evidence
-        description: Comma-separated subset of the supported Pain Miner sources.
-        default: hn,reddit,austender,austender_ocds,g2,github,appstore,stackexchange,bluesky,rss
-      report:
-        type: string
-        label: Report path
-        group: Output
-        advanced: true
-        description: Worker-local Markdown path under /data/reports.
-        default: /data/reports/pain-miner.md
+        description: Select the sources to include in this run.
+        default: [hn, reddit, austender, austender_ocds, g2, github, appstore, stackexchange, bluesky, rss]
       refresh:
         type: boolean
         label: Refresh sources

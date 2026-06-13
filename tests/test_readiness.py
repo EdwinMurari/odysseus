@@ -1,6 +1,18 @@
 """Tests for the readiness / integrity self-check (src/readiness.py)."""
 
+from pathlib import Path
+
 from src.readiness import check_readiness
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_readiness_endpoint_is_available_to_orchestrators():
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+    exempt_block = app_source.split("AUTH_EXEMPT_EXACT = {", 1)[1].split("}", 1)[0]
+
+    assert '"/api/ready"' in exempt_block
 
 
 def test_readiness_reports_core_subsystems():

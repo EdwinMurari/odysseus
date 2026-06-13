@@ -36,10 +36,13 @@ dependency environment. Do not install every repository into the Odysseus
 container or mount the Docker socket into Odysseus.
 
 1. Copy `config/capabilities.example.yaml` to `data/capabilities.yaml`.
-2. Generate a long random token for every worker and place it in `.env`.
-3. Add a worker service using `docker-compose.capabilities.example.yml`.
-4. Start Compose with both files.
-5. Open Tasks and choose **Capability**, or ask the agent to list capabilities.
+2. Generate a long random token for every worker and place it in Odysseus `.env`.
+3. Put provider credentials in each capability repository's `.env`; the
+   Compose overlay loads those files directly into only that worker.
+4. Add a worker service using `docker-compose.capabilities.example.yml`.
+5. Start through `.\dev-stack.ps1 up` (or `rebuild -Scope All` after image,
+   dependency, Compose, or capability-repository changes).
+6. Open Tasks and choose **Capability**, or ask the agent to list capabilities.
 
 The worker is reached by its Compose DNS name, such as
 `http://pain-miner-capability:8080`. It does not publish a host port.
@@ -52,13 +55,6 @@ repositories:
 Projects/Ai/
   odysseus/
   pain-miner/
-```
-
-PowerShell:
-
-```powershell
-$env:COMPOSE_FILE = "docker-compose.yml;docker-compose.capabilities.example.yml"
-docker compose up -d --build
 ```
 
 ## Registry
@@ -180,6 +176,18 @@ request schema, and returns:
   }
 }
 ```
+
+Two resilience properties mirror the deep-research engine:
+
+- a reply that fails JSON parsing or schema validation gets **one corrective
+  round** — the rejected reply plus the validator error are fed back and the
+  model re-asked — before the call fails with 502. The schema contract is
+  unchanged; a reply that still doesn't validate is rejected exactly as before.
+- the route is exempt from the global 45-second request hard-timeout
+  (`REQUEST_HARD_TIMEOUT` in `app.py`); each call is instead bounded by the
+  role's own `timeout_seconds` (default 180) and is cancelled if the
+  capability run stops. Without the exemption every slow local-model
+  structured call 504s at 45s regardless of role configuration.
 
 Security properties:
 
@@ -349,6 +357,10 @@ depends only on `APIFY_TOKEN`; Reddit readiness independently requires all
 three Reddit OAuth variables. Sources without configured prerequisites can be
 excluded without blocking the remaining source set.
 
+Report paths are worker-owned. Odysseus sends run intent only; Pain Miner
+writes beneath `DIGEST_DIR`, returns `report_path` in its result contract, and
+the worker safely inlines that report for import.
+
 Verified through the authenticated Docker APIs:
 
 - capability registry reload/list;
@@ -366,6 +378,8 @@ webhook triggers through the normal Tasks API/UI.
 Stock Research uses the native HTTP worker in the sibling `stock-research`
 repository. Its daily, weekly, and deep modes are registry inputs; dependency
 readiness comes from the worker's authenticated `/v1/readiness` endpoint.
+Its image owns `/app/config` and loads `portfolio.yaml` plus `watchlist.yaml`
+from that directory; callers do not pass host or container paths.
 
 Odysseus owns synthesis models through `stockresearch.summarize` and
 `stockresearch.deepdive`. The worker receives only the scoped broker token and
