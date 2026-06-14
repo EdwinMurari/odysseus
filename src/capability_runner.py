@@ -978,6 +978,11 @@ class CapabilityManager:
         document_id = None
         report_path = None
         if status == "success" and definition and definition.import_report:
+            # Capabilities return structured ``data``; Odysseus writes the
+            # report from it the same way deep research does. The capability's
+            # own deterministic report (if any) is the no-model fallback, so a
+            # broken or unconfigured model never costs the run its output.
+            await self._synthesize_report(run_id, definition, result)
             try:
                 document_id, report_path = self._import_report(
                     run_id, definition, result
@@ -1026,6 +1031,55 @@ class CapabilityManager:
             db.commit()
         finally:
             db.close()
+
+    async def _synthesize_report(
+        self,
+        run_id: str,
+        definition: CapabilityDefinition,
+        result: dict[str, Any],
+    ) -> None:
+        """Replace the capability's deterministic report with a synthesized one.
+
+        Mutates ``result`` in place: on success ``result["report"]`` carries
+        the model-written report and the provenance list gains the report
+        model. Any failure leaves ``result`` untouched apart from a warning —
+        ``_import_report`` then imports whatever report the capability itself
+        provided.
+        """
+        from src.capability_report import synthesize_capability_report
+
+        if not isinstance(result.get("data"), dict) or not result.get("data"):
+            return
+        db = SessionLocal()
+        try:
+            run = db.query(CapabilityRun).filter(CapabilityRun.id == run_id).first()
+            owner = run.owner if run else None
+            run_input = _json_dict(run.input_json) if run else {}
+        finally:
+            db.close()
+        try:
+            report = await synthesize_capability_report(
+                definition, run_id, run_input, result, owner
+            )
+        except Exception as exc:
+            logger.warning(
+                "Capability report synthesis failed for %s: %s", run_id, exc
+            )
+            result.setdefault("warnings", []).append(
+                f"Report synthesis failed; using the capability's own report: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+        if not report:
+            return
+        provenance = report.pop("provenance", None)
+        result["report"] = report
+        if provenance:
+            key = "provenance" if "provenance" in result else "model_provenance"
+            existing = result.get(key)
+            if not isinstance(existing, list):
+                existing = []
+            result[key] = existing + [provenance]
 
     def _import_report(
         self,

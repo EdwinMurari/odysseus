@@ -48,9 +48,14 @@ def test_edgar_user_agent_fails_loud_without_contact():
         edgar_user_agent(ANON)
 
 
-def test_browser_user_agent_is_mozilla_compatible_without_contact():
+def test_browser_user_agent_is_full_browser_profile_with_app_token():
+    """WAF bot rules block 'Mozilla/5.0 (compatible; ...)'; a real browser
+    profile with a trailing app token passes while staying attributable."""
     ua = browser_user_agent(WITH_CONTACT)
-    assert ua == "Mozilla/5.0 (compatible; painminer/0.1)"
+    assert ua.startswith("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    assert "Chrome/" in ua and "Safari/" in ua
+    assert ua.endswith("painminer/0.1")
+    assert "compatible;" not in ua  # the blocked crawler signature
     assert "@" not in ua  # contact never leaks into the browser token
 
 

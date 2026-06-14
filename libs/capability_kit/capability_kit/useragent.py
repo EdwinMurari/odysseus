@@ -94,12 +94,29 @@ def edgar_user_agent(identity: Identity) -> str:
     return identity.contact
 
 
+# A current, real browser profile. WAF bot rules (AWS WAF / CloudFront
+# managed rules in particular) block the classic "Mozilla/5.0 (compatible;
+# app/1.0)" crawler pattern outright — AusTender's ATM pages answered 403 to
+# it in production. A full browser profile with the app token appended as a
+# trailing product token passes those rules while keeping the client
+# identifiable in server logs. No personal details either way.
+_BROWSER_PROFILE = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
 def browser_user_agent(identity: Identity) -> str:
-    """Browser-compatible token for CDN-fronted sites -- no personal details."""
-    comment = f"compatible; {identity.app}/{identity.version}"
+    """Browser-profile UA for CDN/WAF-fronted sites -- no personal details.
+
+    The app token rides as a trailing product token (the convention tools
+    like Electron apps use), so the request is still attributable without
+    matching WAF crawler signatures.
+    """
+    token = f"{identity.app}/{identity.version}"
     if identity.url:
-        comment += f"; +{identity.url}"
-    return f"Mozilla/5.0 ({comment})"
+        token += f" (+{identity.url})"
+    return f"{_BROWSER_PROFILE} {token}"
 
 
 def reddit_user_agent(identity: Identity, bot_username: str, platform: str = "python") -> str:

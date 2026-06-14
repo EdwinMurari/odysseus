@@ -124,6 +124,20 @@ Example: "YES — The report covers all major aspects with evidence from multipl
 Example: "NO — We still lack information about the economic impact."
 """
 
+# Shared report-writing style. The capability report writer
+# (src/capability_report.py) reuses these exact requirements so reports from
+# capability runs read like deep-research reports — one source of truth.
+REPORT_STYLE_REQUIREMENTS = """\
+- Use clear ## headings and ### subheadings to organize into logical sections
+- Each section should have multiple detailed paragraphs, not just bullet points
+- Synthesize and analyze the information — explain WHY things matter, draw comparisons, provide context
+- Include specific data points, numbers, and statistics from the evidence
+- Include source URLs as inline citations [like this](url)
+- Note where sources agree and where they disagree
+- Add a brief executive summary at the top
+- End with a clear conclusion that directly answers the question
+- Write in an engaging, informative style — not dry or robotic"""
+
 FINAL_REPORT_PROMPT = """\
 Write a **long, detailed, comprehensive** research report answering this question:
 
@@ -134,16 +148,7 @@ Write a **long, detailed, comprehensive** research report answering this questio
 
 Requirements:
 - Write at MINIMUM 1500 words — this should be a thorough, magazine-quality article
-- Use clear ## headings and ### subheadings to organize into logical sections
-- Each section should have multiple detailed paragraphs, not just bullet points
-- Synthesize and analyze the information — explain WHY things matter, draw comparisons, provide context
-- Include specific data points, numbers, and statistics from the evidence
-- Include source URLs as inline citations [like this](url)
-- Note where sources agree and where they disagree
-- Add a brief executive summary at the top
-- End with a clear conclusion that directly answers the question
-- Write in an engaging, informative style — not dry or robotic
-"""
+""" + REPORT_STYLE_REQUIREMENTS + "\n"
 
 CATEGORY_PROMPTS = {
     "product": """IMPORTANT FORMAT OVERRIDE — this is a PRODUCT research report:
