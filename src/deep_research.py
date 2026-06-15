@@ -1,6 +1,7 @@
 # src/deep_research.py
 """
 IterResearch-style deep research engine.
+(Final report writing delegates to src/report_writer.py — the shared core.)
 
 Implements an iterative Think→Search→Extract→Synthesize loop where the LLM
 drives every decision: what to search, what's relevant, what's missing, and
@@ -11,29 +12,19 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
 from typing import Callable, Dict, List, Optional, Set
 
 from src.research_utils import strip_thinking, is_low_quality
+from src.report_writer import current_date_context, write_report
 
 from src.goal_based_extractor import EXTRACTOR_SYSTEM
 from src.prompt_security import untrusted_context_message
 
 logger = logging.getLogger(__name__)
 
-
-def current_date_context() -> str:
-    """Preamble that grounds query-generation/planning LLMs in the real current
-    date. Without it the model falls back to its training-cutoff year and emits
-    queries like "best Python tutorials 2025" when the year is actually 2026.
-    System TZ-local so it matches what the user sees. Portable strftime only."""
-    now = datetime.now().astimezone()
-    return (
-        f"Today's date is {now.strftime('%B %d, %Y')} ({now.strftime('%Y-%m-%d')}). "
-        f"When a search query needs a year or refers to 'latest'/'current'/"
-        f"'this year', use {now.strftime('%Y')} or relative wording — never a "
-        f"year inferred from training data.\n\n"
-    )
+# current_date_context now lives in src/report_writer.py (a shared primitive)
+# and is re-exported via the import above for back-compat — research_handler and
+# the date-context tests import it from here.
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -124,64 +115,26 @@ Example: "YES — The report covers all major aspects with evidence from multipl
 Example: "NO — We still lack information about the economic impact."
 """
 
-# Shared report-writing style. The capability report writer
-# (src/capability_report.py) reuses these exact requirements so reports from
-# capability runs read like deep-research reports — one source of truth.
-REPORT_STYLE_REQUIREMENTS = """\
-- Use clear ## headings and ### subheadings to organize into logical sections
-- Each section should have multiple detailed paragraphs, not just bullet points
-- Synthesize and analyze the information — explain WHY things matter, draw comparisons, provide context
-- Include specific data points, numbers, and statistics from the evidence
-- Include source URLs as inline citations [like this](url)
-- Note where sources agree and where they disagree
-- Add a brief executive summary at the top
-- End with a clear conclusion that directly answers the question
-- Write in an engaging, informative style — not dry or robotic"""
-
-FINAL_REPORT_PROMPT = """\
+# The report-writing style contract (REPORT_STYLE_REQUIREMENTS) and the
+# per-category format overrides (CATEGORY_PROMPTS) now live in
+# src/report_writer.py — the single source of truth shared by deep research and
+# capability runs. Both flows write their final report through
+# report_writer.write_report, so quality improvements propagate to both
+# automatically (see ADR: shared report-writer core).
+FINAL_REPORT_FRAMING = """\
 Write a **long, detailed, comprehensive** research report answering this question:
 
 **Question:** {question}
 
 **All collected evidence and analysis:**
-{report}
+{report}"""
 
-Requirements:
-- Write at MINIMUM 1500 words — this should be a thorough, magazine-quality article
-""" + REPORT_STYLE_REQUIREMENTS + "\n"
-
-CATEGORY_PROMPTS = {
-    "product": """IMPORTANT FORMAT OVERRIDE — this is a PRODUCT research report:
-- Structure as a RANKED LIST of products/options (best first)
-- For EACH product include: name as ### heading, approximate price, 2-3 sentence summary, **Pros:** bullet list, **Cons:** bullet list, **Where to buy:** URLs as links
-- Start with a quick-compare markdown table of top picks (columns: Name, Price, Best For, Rating)
-- End with a ## Verdict section picking Best Overall and Best Value
-- Still include source citations inline""",
-
-    "comparison": """IMPORTANT FORMAT OVERRIDE — this is a COMPARISON report:
-- Create a ## Comparison Table as a markdown table comparing ALL options across key criteria (rows = criteria, columns = options)
-- Use checkmarks, ratings, or short values in cells
-- Write a ## section per option with its strengths, weaknesses, and ideal use case
-- End with ## Best For verdicts (e.g., "**Best for small teams:** Option A because...")
-- Include a ## Shared Considerations section for things that apply to all options""",
-
-    "howto": """IMPORTANT FORMAT OVERRIDE — this is a HOW-TO guide:
-- Start with ## Quick Guide — a super concise numbered list (one line per step, no details, just the action). Example: 1. Install X  2. Run Y  3. Configure Z
-- Then ## Prerequisites listing what's needed before starting
-- Then the detailed steps: ## Step 1: ..., ## Step 2: ...
-- Each step should have a clear heading and detailed instructions
-- Use blockquotes (> ) for tips and warnings: > **Tip:** ... or > **Warning:** ...
-- End with ## Common Mistakes section
-- Add estimated time and difficulty level near the top""",
-
-    "factcheck": """IMPORTANT FORMAT OVERRIDE — this is a FACT-CHECK report:
-- Start with ## The Claim restating what's being checked
-- Create ## Evidence For and ## Evidence Against sections
-- Each piece of evidence should be a ### with source name, what it found, and how strong the evidence is
-- Include a ## Verdict section with one of: **Supported**, **Mixed Evidence**, or **Unsupported**
-- End with ## Nuance & Caveats for important context and limitations
-- Be balanced and cite sources for every claim""",
-}
+# The deep-research-only length target. Inserted ahead of the shared style
+# requirements by write_report's extra_requirements hook.
+_FINAL_REPORT_EXTRA = (
+    "- Write at MINIMUM 1500 words — this should be a thorough, "
+    "magazine-quality article"
+)
 
 # ---------------------------------------------------------------------------
 # DeepResearcher
@@ -740,49 +693,23 @@ class DeepResearcher:
     # FINAL REPORT
     # ------------------------------------------------------------------
     async def _final_report(self, question: str, report: str) -> str:
-        """LLM writes a polished final report, retrying if too short."""
-        prompt = FINAL_REPORT_PROMPT.format(
-            question=question,
-            report=report,
-        )
-        cat_extra = CATEGORY_PROMPTS.get(self.category or "", "")
-        if cat_extra:
-            prompt += "\n\n" + cat_extra
+        """Polished final report via the shared report writer.
 
+        Deep research supplies its own framing (question + collected evidence),
+        its engine-bound LLM, and the detected category; the writer owns the
+        shared style contract, category overrides, thinking-strip, and the
+        expand-if-too-short retry. On model failure, keep the evolving report.
+        """
         try:
-            result = await self._llm(
-                [{"role": "user", "content": prompt}],
-                temperature=0.3,
+            result = await write_report(
+                framing=FINAL_REPORT_FRAMING.format(question=question, report=report),
+                llm=self._llm,
+                category=self.category or None,
+                extra_requirements=_FINAL_REPORT_EXTRA,
                 max_tokens=self.max_report_tokens,
-                timeout=180,
+                emit=self._emit,
             )
-
-            # If report is too short, ask the LLM to expand it
-            if len(result.split()) < 400:
-                logger.info(f"Final report too short ({len(result.split())} words), requesting expansion")
-                self._emit(phase="writing", message="Expanding report...")
-                expanded = await self._llm(
-                    [
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": result},
-                        {"role": "user", "content":
-                            "This report is too brief. Please expand it significantly:\n"
-                            "- Add detailed paragraphs for each section (not just bullet points)\n"
-                            "- Include specific data, numbers, and comparisons from the evidence\n"
-                            "- Explain context and significance — don't just list facts\n"
-                            "- Use ## headings and ### subheadings\n"
-                            "- Target at least 1000 words\n"
-                            "Write the full expanded report now."
-                        },
-                    ],
-                    temperature=0.4,
-                    max_tokens=self.max_report_tokens,
-                    timeout=180,
-                )
-                if len(expanded.split()) > len(result.split()):
-                    return expanded
-
-            return result
+            return result or report
         except Exception as e:
             logger.error(f"Final report generation failed: {e}")
             return report  # return the evolving report as-is

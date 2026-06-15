@@ -177,17 +177,41 @@ request schema, and returns:
 }
 ```
 
-Two resilience properties mirror the deep-research engine:
+Resilience is layered so that weak local models (small quantized instruct
+models that cannot reliably emit schema-valid JSON on their own) still succeed,
+without weakening the schema contract for capable models:
 
-- a reply that fails JSON parsing or schema validation gets **one corrective
-  round** — the rejected reply plus the validator error are fed back and the
-  model re-asked — before the call fails with 502. The schema contract is
-  unchanged; a reply that still doesn't validate is rejected exactly as before.
+- **Constrained decoding first.** The request schema is passed to the model
+  server as a decoding constraint, so the reply is valid JSON by construction
+  rather than by the model's goodwill. For OpenAI-compatible endpoints
+  (llama.cpp, vLLM, Ollama's `/v1` shim) this is
+  `response_format={"type":"json_schema","json_schema":{...}}`; for Ollama's
+  native `/api/chat` it is the top-level `format` field. Anthropic has no
+  constrained mode and relies on the parsing/repair layers below. Servers that
+  don't support the field are handled by the fallback in the next point.
+- **Tolerant parsing.** The raw reply is parsed leniently before validation:
+  reasoning blocks (`<think>…</think>` and similar) are stripped, a ```` ```json ````
+  fence is unwrapped, the first balanced `{…}`/`[…]` span is extracted from
+  surrounding prose, and a trailing-comma repair is attempted. This recovers
+  the "almost-JSON" a weak model emits without accepting anything that fails
+  schema validation.
+- **Bounded corrective rounds.** A reply that still fails parsing or validation
+  is re-asked with the rejected reply plus the validator error fed back, up to
+  the role's `max_repair_attempts` (default 2) before the call fails with 502.
+  If the *initial* constrained request is rejected outright by the endpoint
+  (some OpenAI-compatible servers 400 on an unsupported `response_format`), the
+  broker retries once unconstrained so constraint-incompatible endpoints still
+  work via tolerant parsing. The schema contract is unchanged; a reply that
+  still doesn't validate after the budget is rejected exactly as before.
 - the route is exempt from the global 45-second request hard-timeout
   (`REQUEST_HARD_TIMEOUT` in `app.py`); each call is instead bounded by the
   role's own `timeout_seconds` (default 180) and is cancelled if the
   capability run stops. Without the exemption every slow local-model
   structured call 504s at 45s regardless of role configuration.
+
+`max_repair_attempts` is a per-role setting (0–5) alongside `timeout_seconds`
+and `max_tokens` in `model_roles`, so a role pointed at a strong hosted model
+can set it to 0 and a role on a weak local model can keep the default.
 
 Security properties:
 
@@ -239,6 +263,37 @@ The reference HTTP worker automatically converts a `report_path` under
 `CAPABILITY_REPORT_ROOTS_JSON` into an inline report before returning it. This
 is how a report stored in the worker's `/data/reports` volume reaches
 Odysseus without sharing that filesystem with the main container.
+
+### Report synthesis (shared quality core with deep research)
+
+When a capability returns structured `data`, Odysseus synthesizes the run's
+report from it rather than relying only on the capability's own deterministic
+report. Capability synthesis (`src/capability_report.py`) is its **own** flow,
+separate from the deep-research engine: it resolves the owner's `default` model
+(the worker never sees provider keys) and is strictly grounded in the returned
+`data` — the model may use nothing else.
+
+It does **not**, however, keep its own copy of the report-*writing* logic. Both
+capability synthesis and deep research write their report through one shared
+core, `src/report_writer.py`, which is the single source of truth for report
+quality: the prose-style contract (`REPORT_STYLE_REQUIREMENTS`), the
+per-category format overrides (`CATEGORY_PROMPTS`), the reasoning-tag strip, and
+the expand-if-too-short retry. Improve any of these in one place — or improve
+deep research's report path, which uses the same core — and every capability
+report inherits it automatically. There is no per-capability report code and no
+private copy of the writing mechanism (DRY/SRP).
+
+If no `default` endpoint is configured, the `data` block is absent, or synthesis
+fails, the capability's own `report` is imported unchanged — a run never loses
+its output because a model was unavailable.
+
+The same sharing applies to the *visual* report. `GET
+/api/capabilities/runs/{run_id}/report.html` renders the run's stored report
+markdown into the same magazine-style HTML deep research produces, through the
+shared `src/visual_report.generate_visual_report` renderer (the Sources panel is
+built from the report's own inline citations). Deep research and capability runs
+therefore share both the report writer and the report renderer — no per-flow
+copy of either.
 
 ## HTTP protocol
 

@@ -58,6 +58,11 @@ def run(spec_path: str) -> int:
             base_env[name] = os.environ[name]
     base_env["ODYSSEUS_CAPABILITY_RUN_ID"] = spec["run_id"]
     base_env["ODYSSEUS_RUN_ID"] = spec["run_id"]
+    # Tell the worker its hard wall-clock deadline so it can pace internal work
+    # (e.g. a per-signal tagging loop) and return a usable result *before* being
+    # killed at this timeout. Without it, a worker that overruns is killed
+    # mid-step and its entire run — including completed work — is discarded.
+    base_env["ODYSSEUS_CAPABILITY_DEADLINE_SECONDS"] = str(spec["timeout_seconds"])
 
     started = datetime.now(timezone.utc).isoformat()
     try:

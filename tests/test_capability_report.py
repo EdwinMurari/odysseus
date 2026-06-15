@@ -8,9 +8,13 @@ import pytest
 from src.capability_report import (
     MAX_DATA_CHARS,
     build_report_prompt,
+    extract_markdown_sources,
     synthesize_capability_report,
 )
-from src.deep_research import REPORT_STYLE_REQUIREMENTS
+# The style contract is the shared single source of truth in report_writer;
+# build_report_prompt returns only the framing, and write_report appends the
+# style/category requirements (verified via compose_report_prompt below).
+from src.report_writer import REPORT_STYLE_REQUIREMENTS, compose_report_prompt
 
 
 @dataclass
@@ -45,8 +49,10 @@ def test_prompt_is_grounded_in_capability_data():
     assert "g2 failed: 403" in prompt  # warnings ride along for the coverage section
     assert '"since": "7d"' in prompt
     assert "ONLY source of facts" in prompt
-    # Identical style contract as deep research — one source of truth.
-    assert REPORT_STYLE_REQUIREMENTS in prompt
+    # The framing carries the grounding; the shared style contract is appended
+    # by the report writer (same single source of truth as deep research).
+    assert REPORT_STYLE_REQUIREMENTS not in prompt
+    assert REPORT_STYLE_REQUIREMENTS in compose_report_prompt(prompt)
 
 
 def test_prompt_requires_structured_data():
@@ -82,6 +88,21 @@ def test_synthesis_skips_without_data(monkeypatch):
         synthesize_capability_report(
             _Definition(), "run-1", {}, {"summary": "no data"}, "admin"
         )
+    )
+    assert out is None
+
+
+def test_synthesis_skips_when_report_is_final(monkeypatch):
+    """A capability that marks its report final keeps it verbatim — Odysseus
+    runs no JSON-dump re-synthesis (so a weak model can't re-narrate the
+    numbers). The endpoint is never even resolved."""
+    def _boom(*args, **kwargs):
+        raise AssertionError("resolve_endpoint should not be called")
+
+    monkeypatch.setattr("src.endpoint_resolver.resolve_endpoint", _boom)
+    result = dict(RESULT, report_is_final=True)
+    out = asyncio.run(
+        synthesize_capability_report(_Definition(), "run-1", {}, result, "admin")
     )
     assert out is None
 
@@ -138,3 +159,21 @@ def test_synthesis_raises_on_empty_model_reply(monkeypatch):
         asyncio.run(
             synthesize_capability_report(_Definition(), "run-1", {}, dict(RESULT), "admin")
         )
+
+
+def test_extract_markdown_sources_dedupes_and_preserves_order():
+    # The visual report's Sources panel is built from the report's own inline
+    # citations — deduplicated by URL, first occurrence order preserved.
+    md = (
+        "Intro [a](https://ex.com/a), more [a again](https://ex.com/a), "
+        "and [b](https://x.io/b)."
+    )
+    assert extract_markdown_sources(md) == [
+        {"url": "https://ex.com/a"},
+        {"url": "https://x.io/b"},
+    ]
+
+
+def test_extract_markdown_sources_handles_empty():
+    assert extract_markdown_sources("") == []
+    assert extract_markdown_sources(None) == []

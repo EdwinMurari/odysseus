@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from src.auth_helpers import get_current_user
@@ -179,6 +180,17 @@ def setup_capability_routes(manager) -> APIRouter:
         if output is None:
             raise HTTPException(404, "Capability run not found")
         return {"run_id": run_id, "output": output}
+
+    @router.get("/runs/{run_id}/report.html", response_class=HTMLResponse)
+    async def get_run_report_html(request: Request, run_id: str):
+        """Serve the run's report as the same magazine-style HTML deep research
+        produces (rendered fresh from the stored report markdown)."""
+        owner = _owner(request)
+        _authorize_run(owner, run_id)
+        html_content = manager.get_report_html(run_id, owner)
+        if not html_content:
+            raise HTTPException(404, "No visual report available for this run")
+        return HTMLResponse(content=html_content)
 
     @router.post("/runs/{run_id}/cancel")
     async def cancel_run(request: Request, run_id: str):

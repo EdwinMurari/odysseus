@@ -72,6 +72,10 @@ class CapabilityModelRole:
     max_schema_depth: int = 20
     timeout_seconds: int = 180
     max_tokens: int = 4096
+    # How many corrective re-asks the broker may make when a reply fails to
+    # parse/validate. Weak local models need more than one; capable hosted
+    # models rarely need any. Constrained decoding handles most cases first.
+    max_repair_attempts: int = 2
 
 
 @dataclass(frozen=True)
@@ -533,6 +537,7 @@ class CapabilityRegistry:
                 "max_schema_depth": (1, 100, 20),
                 "timeout_seconds": (1, 3600, 180),
                 "max_tokens": (1, 131_072, 4096),
+                "max_repair_attempts": (0, 5, 2),
             }
             values: dict[str, int] = {}
             for field_name, (minimum, maximum, default) in limits.items():

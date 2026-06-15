@@ -108,6 +108,32 @@ class BrokerClient:
         data = self.structured_call(prompt, model_cls.model_json_schema())
         return model_cls.model_validate(data)
 
+    def narrative_text(
+        self, prompt: str, *, key: str = "narrative", max_chars: int = 4000
+    ) -> str:
+        """Clean prose from a weak model — the shared discipline for any
+        capability that lets a local model write report narrative.
+
+        Asks for a one-field JSON object (the easiest shape for a weak model)
+        but does NOT trust it: the reply is thinking-stripped and tolerantly
+        coerced to text (``modeltext``), whether the model returned JSON, a
+        bare string, or JSON-wrapped-in-prose. Returns the cleaned, length-
+        capped prose (possibly ``""``). Does not validate content — callers
+        apply their own rules (e.g. ``contains_digits`` to reject invented
+        figures) and decide on fallback. Raises only on broker transport
+        failure, like ``structured_call``.
+        """
+        from capability_kit.modeltext import coerce_text, strip_thinking
+
+        schema = {
+            "type": "object",
+            "properties": {key: {"type": "string", "maxLength": max_chars}},
+            "required": [key],
+            "additionalProperties": False,
+        }
+        data = self.structured_call(prompt, schema)
+        return strip_thinking(coerce_text(data, key))[:max_chars].strip()
+
     def provenance(self) -> list[dict[str, str]]:
         """Distinct (role, setting_prefix, model, endpoint) records seen so far."""
         return [dict(item) for item in self._provenance]

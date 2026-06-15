@@ -218,10 +218,15 @@ async def test_structured_model_call_repairs_invalid_first_reply(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_structured_model_call_fails_after_single_repair_attempt(
+async def test_structured_model_call_fails_after_exhausting_repair_attempts(
     tmp_path, monkeypatch
 ):
-    """A reply that still fails validation after one repair is rejected."""
+    """A reply that still fails after every repair attempt is rejected.
+
+    The default budget is one constrained attempt plus ``max_repair_attempts``
+    (2) corrective rounds, so a model that never produces JSON is called three
+    times before the broker gives up. Weak local models earn the extra rounds.
+    """
     config = tmp_path / "capabilities.yaml"
     _write_registry(config)
     registry = CapabilityRegistry(str(config))
@@ -251,7 +256,151 @@ async def test_structured_model_call_fails_after_single_repair_attempt(
             "prompt",
             {"type": "object", "properties": {}},
         )
-    assert len(calls) == 2
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_structured_model_call_requests_constrained_decoding(
+    tmp_path, monkeypatch
+):
+    """The schema is forwarded to the model layer as response_format.
+
+    This is the primary defence for weak local models: the server is handed
+    the JSON Schema so the decoder is forced onto the grammar.
+    """
+    config = tmp_path / "capabilities.yaml"
+    _write_registry(config)
+    registry = CapabilityRegistry(str(config))
+    factory = _session(tmp_path, monkeypatch)
+    _add_run(factory)
+    context = authorize_broker_call(registry, "run-1", "painminer.tag")
+
+    import src.capability_model_broker as broker
+
+    monkeypatch.setattr(
+        broker,
+        "resolve_endpoint",
+        lambda *args, **kwargs: ("http://model", "model-1", {}),
+    )
+
+    seen = {}
+
+    async def capturing_call(url, model, messages, **kwargs):
+        seen["response_format"] = kwargs.get("response_format")
+        return '{"answer": "ok"}'
+
+    monkeypatch.setattr(broker, "llm_call_async", capturing_call)
+
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    await invoke_structured_model(context, "prompt", schema)
+
+    assert seen["response_format"] == schema
+
+
+@pytest.mark.asyncio
+async def test_structured_model_call_retries_unconstrained_when_endpoint_rejects(
+    tmp_path, monkeypatch
+):
+    """If the constrained call is rejected outright, retry without it once.
+
+    Some OpenAI-compatible servers 400 on an unsupported response_format. The
+    broker must not fail the whole call for those; it drops constrained
+    decoding and relies on tolerant parsing instead.
+    """
+    config = tmp_path / "capabilities.yaml"
+    _write_registry(config)
+    registry = CapabilityRegistry(str(config))
+    factory = _session(tmp_path, monkeypatch)
+    _add_run(factory)
+    context = authorize_broker_call(registry, "run-1", "painminer.tag")
+
+    import src.capability_model_broker as broker
+
+    monkeypatch.setattr(
+        broker,
+        "resolve_endpoint",
+        lambda *args, **kwargs: ("http://model", "model-1", {}),
+    )
+
+    attempts = []
+
+    async def reject_then_accept(url, model, messages, **kwargs):
+        rf = kwargs.get("response_format")
+        attempts.append(rf)
+        if rf is not None:
+            raise RuntimeError("response_format unsupported")
+        return '{"answer": "plain"}'
+
+    monkeypatch.setattr(broker, "llm_call_async", reject_then_accept)
+
+    result = await invoke_structured_model(
+        context,
+        "prompt",
+        {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    )
+
+    assert result["data"] == {"answer": "plain"}
+    # First attempt constrained (raised), second attempt unconstrained (worked).
+    assert attempts[0] is not None and attempts[1] is None
+
+
+@pytest.mark.asyncio
+async def test_structured_model_call_tolerates_messy_weak_model_output(
+    tmp_path, monkeypatch
+):
+    """Reasoning blocks, prose wrappers, fences and trailing commas all parse.
+
+    This is exactly the class of "almost-JSON" a small quantized local model
+    emits, and the broker must recover the value instead of discarding the work.
+    """
+    config = tmp_path / "capabilities.yaml"
+    _write_registry(config)
+    registry = CapabilityRegistry(str(config))
+    factory = _session(tmp_path, monkeypatch)
+    _add_run(factory)
+    context = authorize_broker_call(registry, "run-1", "painminer.tag")
+
+    import src.capability_model_broker as broker
+
+    monkeypatch.setattr(
+        broker,
+        "resolve_endpoint",
+        lambda *args, **kwargs: ("http://model", "model-1", {}),
+    )
+
+    messy = (
+        "<think>The user wants JSON. Let me produce it.</think>\n"
+        "Sure! Here is the result:\n"
+        "```json\n"
+        '{"answer": "messy but valid",}\n'  # trailing comma
+        "```\n"
+        "Hope that helps!"
+    )
+
+    async def messy_call(*args, **kwargs):
+        return messy
+
+    monkeypatch.setattr(broker, "llm_call_async", messy_call)
+
+    result = await invoke_structured_model(
+        context,
+        "prompt",
+        {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+    )
+
+    assert result["data"] == {"answer": "messy but valid"}
 
 
 @pytest.mark.asyncio

@@ -519,7 +519,7 @@ function runHtml(run, capability) {
       ).join('')}</div>` : ''}
     </details>` : ''}
     <footer>
-      ${run.document_id && reportActions.has('open') ? `<button type="button" data-open-document="${esc(run.document_id)}">Open report</button>` : ''}
+      ${run.document_id && reportActions.has('open') ? `<button type="button" data-open-report="${esc(run.id)}">Open report</button>` : ''}
       ${run.document_id && reportActions.has('chat') ? `<button type="button" data-chat-document="${esc(run.document_id)}">Discuss</button>` : ''}
       ${run.document_id && reportActions.has('export') ? `<button type="button" data-export-document="${esc(run.document_id)}">Export</button>` : ''}
       ${run.document_id && reportActions.has('archive') ? `<button type="button" data-archive-document="${esc(run.document_id)}">Archive</button>` : ''}
@@ -683,6 +683,14 @@ async function toggleEnabled() {
   } catch (error) { uiModule?.showError?.(error.message); }
 }
 
+function openReport(runId) {
+  // The report is rendered on demand from its stored markdown into the same
+  // magazine-style HTML page deep research uses (see capability_routes
+  // /runs/{run_id}/report.html). Opening that endpoint — rather than the raw
+  // markdown document — is the single, canonical way to view a report.
+  window.open(`${API_BASE}/api/capabilities/runs/${encodeURIComponent(runId)}/report.html`, '_blank', 'noopener');
+}
+
 async function discussDocument(documentId) {
   await window.documentModule?.loadDocument(documentId);
   close();
@@ -795,7 +803,7 @@ function onDetailClick(event) {
   if (data.retryDetail !== undefined) return void refreshDetail();
   if (data.taskId) return void window.tasksModule?.openTasks(data.taskId);
   if (data.openTask) return void window.tasksModule?.openTasks(data.openTask);
-  if (data.openDocument) return void window.documentModule?.loadDocument(data.openDocument);
+  if (data.openReport) return void openReport(data.openReport);
   if (data.chatDocument) return void discussDocument(data.chatDocument);
   if (data.exportDocument) return void exportDocument(data.exportDocument);
   if (data.archiveDocument) return void archiveDocument(data.archiveDocument);

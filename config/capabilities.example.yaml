@@ -7,6 +7,9 @@ model_roles:
     setting_prefix: utility
     capabilities: [pain-miner]
     max_tokens: 2048
+    # Bulk per-signal tagging: cap each call so one stalled call can't eat a
+    # large slice of the whole-run budget (see ADR-039 in pain-miner).
+    timeout_seconds: 60
   painminer.cluster:
     setting_prefix: default
     capabilities: [pain-miner]

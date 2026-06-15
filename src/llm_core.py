@@ -44,20 +44,28 @@ def _stream_timeout(read_timeout) -> httpx.Timeout:
 
 
 # Cache for LLM responses
-def _get_cache_key(url: str, model: str, messages: List[Dict], 
-                   temperature: float, max_tokens: int) -> str:
-    """Generate cache key for LLM requests."""
+def _get_cache_key(url: str, model: str, messages: List[Dict],
+                   temperature: float, max_tokens: int,
+                   response_format: Optional[Dict] = None) -> str:
+    """Generate cache key for LLM requests.
+
+    ``response_format`` participates in the key: a constrained (schema-bound)
+    request and an otherwise-identical unconstrained one are different requests
+    that can yield different replies, so they must not share a cache entry. The
+    broker's constrained→unconstrained fallback relies on this distinction.
+    """
     hashable_messages = []
     for msg in messages:
         sorted_items = tuple(sorted(msg.items()))
         hashable_messages.append(sorted_items)
-    
+
     content = json.dumps({
         'url': url,
-        'model': model, 
+        'model': model,
         'messages': hashable_messages,
         'temp': temperature,
-        'max_tokens': max_tokens
+        'max_tokens': max_tokens,
+        'response_format': response_format,
     }, sort_keys=True)
     return hashlib.sha256(content.encode()).hexdigest()
 
@@ -1532,8 +1540,20 @@ async def llm_call_async(
     max_retries: int = LLMConfig.MAX_RETRIES,
     prompt_type: Optional[str] = None,
     session_id: Optional[str] = None,
+    response_format: Optional[Dict] = None,
 ) -> str:
-    """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging."""
+    """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging.
+
+    ``response_format`` requests server-side structured output. When supplied it
+    is a JSON Schema (a plain schema dict, not the OpenAI wrapper). It is
+    translated to each provider's native constrained-decoding control so even
+    weak local models cannot emit schema-invalid JSON:
+      - OpenAI-compatible (llama.cpp / vLLM / Ollama ``/v1``): ``response_format``
+        ``{"type": "json_schema", "json_schema": {...}}``.
+      - Ollama native ``/api/chat``: top-level ``format`` set to the schema.
+      - Anthropic: no constrained mode; ignored (the broker's tolerant parsing
+        and repair retry cover Claude, which rarely needs it).
+    """
     provider = _detect_provider(url)
     messages_copy = _sanitize_llm_messages(messages)
 
@@ -1550,7 +1570,9 @@ async def llm_call_async(
     else:
         messages_copy = non_sys
 
-    cache_key = _get_cache_key(url, model, messages_copy, temperature, max_tokens)
+    cache_key = _get_cache_key(
+        url, model, messages_copy, temperature, max_tokens, response_format
+    )
     cached_response = _get_cached_response(cache_key)
     if cached_response:
         logger.debug(f"Returning cached response for key: {cache_key}")
@@ -1612,6 +1634,11 @@ async def llm_call_async(
             model, messages_copy, temperature, max_tokens,
             stream=False, num_ctx=get_context_length(url, model),
         )
+        # Ollama's native /api/chat takes a top-level `format` JSON Schema for
+        # constrained decoding. This is what makes a small local model emit
+        # schema-valid JSON deterministically instead of best-effort prose.
+        if response_format:
+            payload["format"] = response_format
     else:
         target_url = url
         h = _provider_headers(provider, headers)
@@ -1631,6 +1658,25 @@ async def llm_call_async(
         # Suppress thinking for qwen3/gemma4 on Ollama /v1 — same as stream_llm.
         if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
             payload["think"] = False
+        # OpenAI-compatible structured output. llama.cpp, vLLM and Ollama's /v1
+        # shim all honor response_format={"type":"json_schema",...} and force the
+        # decoder onto the grammar, so even a weak quant can't return invalid
+        # JSON. Wrap the bare schema in the OpenAI envelope the servers expect.
+        if response_format:
+            # strict=False on purpose: OpenAI strict mode additionally demands
+            # additionalProperties:false and every property in `required`, which
+            # a plain pydantic schema doesn't satisfy and which makes strict
+            # servers 400. Local grammar-based servers (llama.cpp, vLLM, Ollama
+            # /v1) still honor the schema as a decoding grammar without it, which
+            # is exactly the constraint weak models need.
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_output",
+                    "schema": response_format,
+                    "strict": False,
+                },
+            }
         _apply_local_cache_affinity(payload, url, session_id)
 
     if _is_host_dead(target_url):

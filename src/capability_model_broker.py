@@ -1,4 +1,9 @@
-"""Run-scoped structured model invocation for trusted capability workers."""
+"""Run-scoped structured model invocation for trusted capability workers.
+
+Structured output is enforced primarily via constrained decoding (the schema is
+passed to the model server), with tolerant parsing and bounded repair re-asks as
+fallbacks so weak local models still return schema-valid JSON.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +21,17 @@ from src.endpoint_resolver import resolve_endpoint
 from src.llm_core import llm_call_async
 
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
+# Small reasoning-tuned local models (gemma, qwen, deepseek-distill, ...) often
+# wrap their answer in a chain-of-thought block before the JSON. Strip any such
+# block so tolerant extraction sees only the answer.
+_THINK_BLOCK_RE = re.compile(
+    r"<(think|thinking|reasoning|reflection|scratchpad)>.*?</\1>",
+    re.DOTALL | re.IGNORECASE,
+)
+# Trailing commas before a closing brace/bracket are the single most common
+# way a weak model produces "almost-JSON". JSON forbids them; we strip them as
+# a last-resort repair before giving up on a reply.
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _ACTIVE_STATUSES = {"queued", "running"}
 
 
@@ -126,20 +142,84 @@ def validate_broker_request(
         raise CapabilityModelRequestError(f"invalid JSON schema: {exc.message}") from None
 
 
-def _parse_json_response(text: str) -> Any:
-    match = _JSON_FENCE_RE.match(text)
-    if match:
-        text = match.group(1)
+def _balanced_json_slice(text: str) -> str | None:
+    """Return the first balanced ``{...}`` or ``[...]`` span in ``text``.
+
+    Scans with string/escape awareness so braces inside string literals don't
+    throw off the depth count. Weak models routinely wrap the JSON in prose
+    ("Here is the JSON: {...}. Hope that helps!"); this recovers the value
+    without depending on it being the only thing in the reply.
+    """
+    start = None
+    opener = None
+    closer = None
+    depth = 0
+    in_str = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if start is None:
+            if ch in "{[":
+                start = i
+                opener = ch
+                closer = "}" if ch == "{" else "]"
+                depth = 1
+            continue
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _loads_lenient(candidate: str) -> Any:
+    """``json.loads`` with one tolerant retry that drops trailing commas."""
     try:
-        return json.loads(text)
+        return json.loads(candidate)
     except (TypeError, ValueError):
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                return json.loads(text[start : end + 1])
-            except ValueError:
-                pass
+        repaired = _TRAILING_COMMA_RE.sub(r"\1", candidate)
+        return json.loads(repaired)
+
+
+def _parse_json_response(text: str) -> Any:
+    """Extract one JSON value from a raw model reply, tolerantly.
+
+    Order of attempts, cheapest/most-exact first:
+      1. strip reasoning blocks the model may have emitted;
+      2. parse the whole (trimmed) reply, then a ```fenced``` body;
+      3. fall back to the first balanced ``{...}``/``[...]`` span in the text.
+    Each candidate is parsed with lenient (trailing-comma-tolerant) loading.
+    """
+    cleaned = _THINK_BLOCK_RE.sub("", text).strip()
+
+    candidates: list[str] = []
+    if cleaned:
+        candidates.append(cleaned)
+    fence = _JSON_FENCE_RE.match(cleaned)
+    if fence:
+        candidates.append(fence.group(1).strip())
+    sliced = _balanced_json_slice(cleaned)
+    if sliced:
+        candidates.append(sliced)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return _loads_lenient(candidate)
+        except (TypeError, ValueError):
+            continue
     raise CapabilityModelBrokerError("Model returned invalid JSON")
 
 
@@ -186,7 +266,9 @@ async def invoke_structured_model(
         {"role": "user", "content": prompt},
     ]
 
-    async def _invoke(call_messages: list[dict[str, str]]) -> str:
+    async def _invoke(
+        call_messages: list[dict[str, str]], *, constrain: bool
+    ) -> str:
         try:
             return await _call_while_run_active(
                 context,
@@ -200,6 +282,12 @@ async def invoke_structured_model(
                 max_retries=1,
                 prompt_type=f"capability:{context.role.name}",
                 session_id=context.run_id,
+                # Constrained decoding is the primary defence against weak local
+                # models: the server is handed the JSON Schema and forced onto
+                # the grammar, so the reply is valid JSON by construction.
+                # Endpoints that don't support it ignore the field; the tolerant
+                # parser and repair loop below are the fallback for those.
+                response_format=schema if constrain else None,
             )
         except CapabilityModelAuthorizationError:
             raise
@@ -208,16 +296,25 @@ async def invoke_structured_model(
                 f"Model invocation failed: {type(exc).__name__}: {exc}"
             ) from exc
 
-    raw = await _invoke(messages)
+    try:
+        raw = await _invoke(messages, constrain=True)
+    except CapabilityModelBrokerError:
+        # The endpoint rejected the request outright — most likely it doesn't
+        # accept the response_format field. Retry once without constrained
+        # decoding so constraint-incompatible endpoints still work (they then
+        # rely on the tolerant parser + repair loop). A second failure here is
+        # a real outage and propagates.
+        raw = await _invoke(messages, constrain=False)
     value, error = _parse_and_validate(raw, schema)
-    if error is not None:
-        # One corrective round before failing the call. Small utility models
-        # routinely miss a required key or wrap the value on the first try;
-        # the deep-research engine recovers from this class of error with
-        # tolerant parsing and re-asks, and capability workers deserve the
-        # same resilience. Feeding the validator message back fixes the
-        # majority of cases without weakening the schema contract — a reply
-        # that still doesn't validate is rejected exactly as before.
+
+    # Corrective rounds before failing. Small utility models routinely miss a
+    # required key or wrap the value on the first try; feeding the validator
+    # message back recovers the majority without weakening the schema contract.
+    # A reply that still doesn't validate after the configured attempts is
+    # rejected exactly as before.
+    attempt = 0
+    while error is not None and attempt < context.role.max_repair_attempts:
+        attempt += 1
         repair_messages = messages + [
             {"role": "assistant", "content": raw},
             {
@@ -230,8 +327,9 @@ async def invoke_structured_model(
                 ),
             },
         ]
-        raw = await _invoke(repair_messages)
+        raw = await _invoke(repair_messages, constrain=True)
         value, error = _parse_and_validate(raw, schema)
+
     if error is not None:
         raise CapabilityModelBrokerError(error)
     return {

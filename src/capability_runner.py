@@ -1167,6 +1167,45 @@ class CapabilityManager:
         finally:
             db.close()
 
+    def get_report_html(self, run_id: str, owner: str | None) -> str | None:
+        """Render the run's stored report as visual HTML, fresh each call.
+
+        Mirrors deep research's on-demand visual report: both flows render
+        through the shared ``generate_visual_report`` primitive (via
+        ``capability_report.render_report_html``), so there is no second copy of
+        the rendering logic. Returns None when the run is not visible to the
+        owner or has no report document.
+        """
+        run = self.get_run(run_id, owner)
+        if not run:
+            return None
+        db = SessionLocal()
+        try:
+            doc = (
+                db.query(Document)
+                .filter(
+                    Document.source_capability_run_id == run_id,
+                    Document.is_active.is_(True),
+                )
+                .order_by(Document.created_at.desc())
+                .first()
+            )
+            if doc is None or not (doc.current_content or "").strip():
+                return None
+            title = doc.title or "Capability report"
+            content = doc.current_content
+        finally:
+            db.close()
+        from src.capability_report import render_report_html
+
+        try:
+            return render_report_html(title, content)
+        except Exception as exc:
+            logger.warning(
+                "Capability report HTML render failed for %s: %s", run_id, exc
+            )
+            return None
+
     @staticmethod
     def _url(definition: CapabilityDefinition, path: str) -> str:
         return f"{definition.base_url}{path if path.startswith('/') else '/' + path}"
