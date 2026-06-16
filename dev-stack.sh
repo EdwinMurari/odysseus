@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # dev-stack.sh — Odysseus deploy on the WSL Docker engine (Linux-native).
 # Mirrors dev-stack.ps1 against Docker Engine in WSL. No Docker Desktop, no session.
-#   cd /mnt/d/Projects/Ai/odysseus && ./dev-stack.sh dev
-# Actions: up|dev|rebuild|restart|status|logs|down  Options: --scope App|All --gpu nvidia|amd|none --dev --no-capabilities --no-limits --tail N
+#   cd /mnt/d/Projects/Ai/odysseus && ./dev-stack.sh dev-session
+# Actions: up|dev|dev-session|rebuild|restart|status|logs|down  Options: --scope App|All --gpu nvidia|amd|none --dev --no-capabilities --no-limits --tail N
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
@@ -20,7 +20,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$ACTION" == "dev" ]] && DEV=1
+case "$ACTION" in
+  dev|dev-session) DEV=1;;
+esac
 
 FILES=(-f docker-compose.yml)
 case "$GPU" in
@@ -47,6 +49,10 @@ dc config --quiet
 case "$ACTION" in
   up) dc up -d --remove-orphans;;
   dev) dc up -d --force-recreate --remove-orphans;;
+  dev-session)
+    dc up -d --force-recreate --remove-orphans
+    dc logs --tail "$TAIL" -f
+    ;;
   rebuild)
     if [[ "$SCOPE" == "All" ]]; then
       dc up -d --build --force-recreate --remove-orphans
