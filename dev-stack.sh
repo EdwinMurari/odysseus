@@ -36,7 +36,9 @@ if [[ "$LIMITS" -eq 1 ]]; then
   [[ "$CAPS" -eq 1 ]] && FILES+=(-f docker/limits.capabilities.yml)
 fi
 
-dc() { docker compose "${FILES[@]}" "$@"; }
+# dev-stack owns the compose file list; mask .env COMPOSE_FILE so Windows/WSL
+# separators or stale overlay choices cannot change this script's runtime shape.
+dc() { COMPOSE_FILE= docker compose "${FILES[@]}" "$@"; }
 on_off() { [[ "$1" -eq 1 ]] && echo On || echo Off; }
 echo "==> GPU: $GPU | Capabilities: $(on_off $CAPS) | Dev: $(on_off $DEV) | Limits: $(on_off $LIMITS) | Action: $ACTION | Scope: $SCOPE"
 echo "==> Validating effective compose config"

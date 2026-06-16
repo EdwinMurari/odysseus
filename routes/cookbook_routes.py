@@ -48,7 +48,7 @@ from routes.cookbook_helpers import (
     _pip_install_no_cache, _user_shell_path_bootstrap, _venv_safe_local_pip_install_cmd,
     _diagnose_serve_output, run_ssh_command_async,
     _normalize_llama_cpp_python_cache_types,
-    _local_docker_gpu_passthrough_error,
+    _local_docker_gpu_passthrough_error, _local_serve_port_in_use_error,
     ModelDownloadRequest, ServeRequest,
 )
 
@@ -1356,6 +1356,12 @@ def setup_cookbook_routes() -> APIRouter:
             )
             if _ollama_chosen_port:
                 req.cmd = f"OLLAMA_HOST={_ollama_bind_host}:{_ollama_chosen_port} {req.cmd}"
+        port_in_use_error = _local_serve_port_in_use_error(
+            req.cmd,
+            remote_host=remote,
+        )
+        if port_in_use_error:
+            return {"ok": False, "error": port_in_use_error}
         # LOCAL execution on a native-Windows host never uses tmux (detached
         # process path below), regardless of the UI-supplied platform.
         local_windows = IS_WINDOWS and not remote

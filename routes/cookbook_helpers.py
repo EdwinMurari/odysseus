@@ -8,6 +8,8 @@ import os
 import posixpath
 import re
 import shlex
+import socket
+import subprocess
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -72,12 +74,90 @@ def _serve_command_requests_gpu(cmd: str | None) -> bool:
     )
 
 
+def _nvidia_smi_reports_gpu() -> bool:
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "-L"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0 and bool(re.search(r"^GPU\s+\d+:", proc.stdout or "", re.MULTILINE))
+
+
+def _serve_command_port(cmd: str | None) -> int | None:
+    text = str(cmd or "")
+    for pattern in (
+        r"(?:^|\s)--port(?:\s+|=)(\d{2,5})\b",
+        r"(?:^|\s)-p(?:\s+|=)(\d{2,5})\b",
+        r"(?:^|\s)OLLAMA_HOST=[^\s:]+:(\d{2,5})\b",
+    ):
+        m = re.search(pattern, text)
+        if not m:
+            continue
+        port = int(m.group(1))
+        if 1 <= port <= 65535:
+            return port
+    return None
+
+
+def _serve_command_bind_host(cmd: str | None) -> str:
+    text = str(cmd or "")
+    m = re.search(r"(?:^|\s)--host(?:\s+|=)([^\s]+)", text)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?:^|\s)OLLAMA_HOST=([^\s:]+):\d{2,5}\b", text)
+    if m:
+        return m.group(1)
+    return "0.0.0.0"
+
+
+def _local_port_unavailable_for_bind(host: str, port: int) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, int(port), type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for family, socktype, proto, _, sockaddr in infos:
+        try:
+            with socket.socket(family, socktype, proto) as sock:
+                sock.bind(sockaddr)
+        except OSError:
+            return True
+    return False
+
+
+def _local_serve_port_in_use_error(
+    cmd: str | None,
+    *,
+    remote_host: str | None = None,
+    port_probe=None,
+) -> str | None:
+    if remote_host:
+        return None
+    port = _serve_command_port(cmd)
+    if port is None:
+        return None
+    host = _serve_command_bind_host(cmd)
+    probe = _local_port_unavailable_for_bind if port_probe is None else port_probe
+    if not probe(host, port):
+        return None
+    return (
+        f"Port {port} is not available for {host} inside this Odysseus container. "
+        "Stop the running model/task or choose another --port before launching."
+    )
+
+
 def _local_docker_gpu_passthrough_error(
     cmd: str | None,
     *,
     remote_host: str | None = None,
     environ=None,
     path_exists=None,
+    nvidia_probe=None,
 ) -> str | None:
     """Explain a local Docker GPU misconfiguration before CPU fallback starts."""
     if remote_host or not _serve_command_requests_gpu(cmd):
@@ -90,6 +170,9 @@ def _local_docker_gpu_passthrough_error(
 
     nvidia_visible = str(env.get("NVIDIA_VISIBLE_DEVICES", "") or "").strip().lower()
     has_nvidia = nvidia_visible not in {"", "none", "void"}
+    if not has_nvidia:
+        probe = _nvidia_smi_reports_gpu if nvidia_probe is None else nvidia_probe
+        has_nvidia = bool(probe())
     has_amd = exists("/dev/kfd")
     if has_nvidia or has_amd:
         return None

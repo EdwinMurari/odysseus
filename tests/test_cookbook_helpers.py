@@ -17,6 +17,9 @@ from routes.cookbook_helpers import (
     _append_vllm_linux_preflight_lines,
     _local_tooling_path_export,
     _local_docker_gpu_passthrough_error,
+    _local_serve_port_in_use_error,
+    _serve_command_bind_host,
+    _serve_command_port,
     _pip_install_attempt,
     _pip_install_fallback_chain,
     _ollama_bind_from_cmd,
@@ -48,6 +51,7 @@ def test_local_docker_gpu_serve_rejects_missing_passthrough(cmd):
         cmd,
         environ={},
         path_exists=lambda path: path == "/.dockerenv",
+        nvidia_probe=lambda: False,
     )
 
     assert error is not None
@@ -60,6 +64,7 @@ def test_local_docker_cpu_serve_allows_missing_passthrough():
         "python3 -m llama_cpp.server --n_gpu_layers 0 --port 8000",
         environ={},
         path_exists=lambda path: path == "/.dockerenv",
+        nvidia_probe=lambda: False,
     )
 
     assert error is None
@@ -75,12 +80,80 @@ def test_local_docker_gpu_serve_allows_nvidia_overlay():
     assert error is None
 
 
+def test_local_docker_gpu_serve_allows_nvidia_probe_without_env():
+    error = _local_docker_gpu_passthrough_error(
+        "llama-server -ngl 99 --port 8000",
+        environ={},
+        path_exists=lambda path: path == "/.dockerenv",
+        nvidia_probe=lambda: True,
+    )
+
+    assert error is None
+
+
 def test_remote_gpu_serve_does_not_require_local_passthrough():
     error = _local_docker_gpu_passthrough_error(
         "vllm serve org/model",
         remote_host="gpu@example.test",
         environ={},
         path_exists=lambda path: path == "/.dockerenv",
+        nvidia_probe=lambda: False,
+    )
+
+    assert error is None
+
+
+@pytest.mark.parametrize(
+    ("cmd", "port"),
+    [
+        ("llama-server --host 0.0.0.0 --port 8000", 8000),
+        ("vllm serve org/model --port=8010", 8010),
+        ("python3 -m llama_cpp.server -p 8080", 8080),
+        ("OLLAMA_HOST=127.0.0.1:11435 ollama serve", 11435),
+        ("python3 -m pip install vllm", None),
+    ],
+)
+def test_serve_command_port(cmd, port):
+    assert _serve_command_port(cmd) == port
+
+
+@pytest.mark.parametrize(
+    ("cmd", "host"),
+    [
+        ("llama-server --host 0.0.0.0 --port 8000", "0.0.0.0"),
+        ("vllm serve org/model --host=127.0.0.1 --port 8010", "127.0.0.1"),
+        ("OLLAMA_HOST=127.0.0.1:11435 ollama serve", "127.0.0.1"),
+        ("python3 -m llama_cpp.server --port 8080", "0.0.0.0"),
+    ],
+)
+def test_serve_command_bind_host(cmd, host):
+    assert _serve_command_bind_host(cmd) == host
+
+
+def test_local_serve_rejects_occupied_port():
+    error = _local_serve_port_in_use_error(
+        "llama-server --host 0.0.0.0 --port 8000",
+        port_probe=lambda host, port: host == "0.0.0.0" and port == 8000,
+    )
+
+    assert error is not None
+    assert "Port 8000 is not available" in error
+
+
+def test_local_serve_allows_free_port():
+    error = _local_serve_port_in_use_error(
+        "llama-server --host 0.0.0.0 --port 8000",
+        port_probe=lambda host, port: False,
+    )
+
+    assert error is None
+
+
+def test_remote_serve_skips_local_port_probe():
+    error = _local_serve_port_in_use_error(
+        "llama-server --host 0.0.0.0 --port 8000",
+        remote_host="gpu@example.test",
+        port_probe=lambda host, port: True,
     )
 
     assert error is None
