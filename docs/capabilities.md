@@ -20,6 +20,8 @@ Odysseus owns orchestration:
 
 The LLM can explain a report, but the capability repository remains the source
 of truth for algorithms, market data, scoring, and other deterministic logic.
+Capability repositories are built and operated through Odysseus; do not run
+them as independent app workflows.
 
 For structured LLM work, Odysseus also owns provider credentials and
 endpoint/model selection. Capability workers own prompts and schemas, but never
@@ -40,8 +42,9 @@ container or mount the Docker socket into Odysseus.
 3. Put provider credentials in each capability repository's `.env`; the
    Compose overlay loads those files directly into only that worker.
 4. Add a worker service using `docker-compose.capabilities.example.yml`.
-5. Start through `.\dev-stack.ps1 up` (or `rebuild -Scope All` after image,
-   dependency, Compose, or capability-repository changes).
+5. Start through Odysseus `./dev-stack.sh up` in WSL Docker Engine (or
+   `rebuild --scope All` after image, dependency, Compose, or
+   capability-repository changes).
 6. Open Tasks and choose **Capability**, or ask the agent to list capabilities.
 
 The worker is reached by its Compose DNS name, such as
