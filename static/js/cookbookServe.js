@@ -679,9 +679,13 @@ function _rerenderCachedModels() {
       // "which devices + how much of them" decisions sit adjacent. Max
       // Seqs follows Context per the "request-shape" cluster.
       panelHtml += `<label class="hwfit-backend-vllm hwfit-backend-sglang">${_l('TP','Tensor Parallelism — split model across N GPUs')}<select class="hwfit-sf" data-field="tp">${tpOpts}</select></label>`;
-      // ctx resets to the model's max on every panel open (the real ctx slider
-      // lives in the Scan/Download toolbar — see cookbook.js .hwfit-ctx-control).
-      panelHtml += `<label>${_l('Context','Max tokens per request — resets to the model max on every open. Lower = less VRAM')}<input type="text" class="hwfit-sf" data-field="ctx" value="${esc(m.context_length || m.context || '20000')}" /></label>`;
+      // A model's full trained context is an upper bound, not a safe launch
+      // default: it can recreate a huge KV-cache and OOM llama.cpp at startup
+      // (see test_cookbook_llama_oom_regression). Preserve any saved per-model
+      // value; otherwise default conservatively, capped at 8192.
+      const _modelCtxMax = Number(m.context_length || m.context || 0);
+      const _defaultCtx = String(Math.min(_modelCtxMax || 8192, 8192));
+      panelHtml += `<label>${_l('Context','Max tokens per request. Saved per model; higher values use substantially more KV-cache memory.')}<input type="text" class="hwfit-sf" data-field="ctx" value="${esc(sv('ctx', _defaultCtx))}" /></label>`;
       panelHtml += `<label class="hwfit-backend-vllm hwfit-backend-sglang">${_l('Max Seqs','Maximum concurrent requests. Lower = less memory. Default 4 — prosumer GPUs often OOM on vLLM default 256 during CUDA graph capture.')}<input type="text" class="hwfit-sf" data-field="max_seqs" value="${esc(sv('max_seqs', '4'))}" placeholder="4" /></label>`;
       // GPU "auto" field removed — the GPU button strip below already
       // writes data-field="gpus" (the canonical comma-separated device

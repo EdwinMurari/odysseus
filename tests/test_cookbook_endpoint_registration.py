@@ -13,7 +13,17 @@ def test_cookbook_marks_local_endpoint_registration_as_container_local():
     src = _source()
     assert "function _appendCookbookEndpointScope" in src
     assert "fd.append('container_local', 'true')" in src
-    assert src.count("_appendCookbookEndpointScope(fd,") >= 3
+    # Most served endpoints are now auto-registered by the backend
+    # (_ensure_served_endpoint in src/tool_implementations.py, which sets
+    # container_local itself); the frontend only registers as a fallback. The
+    # invariant is that EVERY remaining frontend registration POST (the ones
+    # that set skip_probe) is scoped via the helper, so a local serve is never
+    # registered with a bare loopback URL the container can't reach.
+    registration_posts = src.count("fd.append('skip_probe', 'true')")
+    # Subtract the helper's own definition from the match count.
+    scope_calls = src.count("_appendCookbookEndpointScope(fd,") - 1
+    assert registration_posts >= 1
+    assert scope_calls == registration_posts
 
 
 def test_cookbook_does_not_use_local_as_endpoint_hostname():

@@ -1220,10 +1220,7 @@ def setup_email_routes():
             return {"emails": emails, "total": total, "query": q, "folder": effective_folder}
 
     @router.get("/search")
-    # Sync def: the body is blocking IMAP I/O with no awaits. As `async def` it ran
-    # directly on the event loop and stalled the whole app during a search; as a sync
-    # def FastAPI runs it in a threadpool, keeping the loop responsive.
-    def search_emails(
+    async def search_emails(
         q: str = Query(""),
         folder: str = Query("INBOX"),
         limit: int = Query(50),
@@ -1232,19 +1229,19 @@ def setup_email_routes():
     ):
         """Search emails server-side via IMAP SEARCH. Matches subject, from, or body text.
 
-        When the caller asks for INBOX and the account has an "All Mail"
-        folder (Gmail does), we transparently swap to All Mail so the
-        search surfaces archived / labelled emails too. Plain IMAP
-        accounts fall back to whatever folder the caller specified."""
+        Offloads the blocking IMAP work to a worker thread so the event loop
+        never stalls, mirroring the /list route. When the caller asks for
+        INBOX and the account has an "All Mail" folder (Gmail does), the
+        search transparently swaps to All Mail so it surfaces archived /
+        labelled emails too; plain IMAP accounts fall back to the requested
+        folder."""
         if not q or len(q) < 2:
             return {"emails": [], "total": 0, "query": q}
         # CRLF in q would terminate the IMAP command early — reject defensively.
         if "\r" in q or "\n" in q:
             raise HTTPException(400, "Invalid query")
         try:
-            # Handler is a sync def (see comment above), so FastAPI already runs
-            # this in a threadpool — call the batched helper directly.
-            return _search_emails_sync(q, folder, limit, account_id, owner)
+            return await _asyncio.to_thread(_search_emails_sync, q, folder, limit, account_id, owner)
         except Exception as e:
             logger.error(f"Search failed: {e}")
             return {"emails": [], "total": 0, "error": "Mail operation failed"}
