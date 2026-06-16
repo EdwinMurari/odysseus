@@ -77,6 +77,17 @@ def test_docker_entrypoint_ownership_repair_stays_inside_expected_mounts():
     assert "Skipping recursive ownership repair" in script
 
 
+def test_docker_entrypoint_does_not_recursively_chown_model_cache_by_default():
+    script = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+
+    assert 'ODYSSEUS_OWNERSHIP_REPAIR="${ODYSSEUS_OWNERSHIP_REPAIR:-roots}"' in script
+    assert "repair_shallow_ownership" in script
+    assert "/app/data)" in script
+    assert "repair_shallow_ownership \"$dir\"" in script
+    assert "/app/logs|/app/.ssh)" in script
+    assert "/app/.cache/huggingface" not in script.split("full)", 1)[0]
+
+
 def test_dockerignore_excludes_secrets_editor_backups():
     patterns = set((ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines())
     assert {

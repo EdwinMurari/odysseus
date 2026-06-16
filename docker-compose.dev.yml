@@ -1,0 +1,87 @@
+# Local development override. Use through dev-stack.sh --dev.
+services:
+  odysseus:
+    entrypoint:
+      - /app/docker/dev-entrypoint.sh
+    volumes:
+      - .:/app:z
+      - ${APP_DATA_DIR:-./data}:/app/data:z
+      - ${APP_LOGS_DIR:-./logs}:/app/logs:z
+      - ${APP_DATA_DIR:-./data}/ssh:/app/.ssh:z
+      - ${APP_DATA_DIR:-./data}/huggingface:/app/.cache/huggingface:z
+      - ${APP_DATA_DIR:-./data}/local:/app/.local:z
+    command:
+      - uvicorn
+      - app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "7000"
+      - --reload
+      - --reload-dir
+      - /app/core
+      - --reload-dir
+      - /app/routes
+      - --reload-dir
+      - /app/src
+      - --reload-dir
+      - /app/services
+      - --reload-dir
+      - /app/integrations
+      - --reload-dir
+      - /app/libs
+      - --reload-dir
+      - /app/mcp_servers
+      - --reload-dir
+      - /app/companion
+      - --reload-dir
+      - /app/config
+
+  pain-miner-capability:
+    volumes:
+      - ../pain-miner:/capability:z
+      - ./libs/capability_kit:/opt/capability_kit:z
+      - ./integrations/capabilities/worker.py:/opt/odysseus_capability_worker.py:ro,z
+      - pain-miner-runs:/data/runs
+      - pain-miner-reports:/data/reports
+    environment:
+      - PYTHONPATH=/capability:/opt/capability_kit
+    command:
+      - uvicorn
+      - --app-dir
+      - /opt
+      - odysseus_capability_worker:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --reload
+      - --reload-dir
+      - /opt
+      - --reload-dir
+      - /capability
+      - --reload-dir
+      - /opt/capability_kit
+
+  stock-research-capability:
+    volumes:
+      - ../stock-research/src:/app/src:z
+      - ../stock-research/config:/app/config:z
+      - ./libs/capability_kit:/opt/capability_kit:z
+      - stock-research-data:/data
+    environment:
+      - PYTHONPATH=/app/src:/opt/capability_kit
+    command:
+      - uvicorn
+      - stock_research.worker:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --reload
+      - --reload-dir
+      - /app/src
+      - --reload-dir
+      - /app/config
+      - --reload-dir
+      - /opt/capability_kit

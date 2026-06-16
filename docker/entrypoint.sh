@@ -13,6 +13,7 @@ set -e
 
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
+ODYSSEUS_OWNERSHIP_REPAIR="${ODYSSEUS_OWNERSHIP_REPAIR:-roots}"
 GOSU_BIN="$(command -v gosu)"
 PYTHON_BIN="$(command -v python)"
 
@@ -64,6 +65,14 @@ repair_tree_ownership() {
     fi
 }
 
+repair_shallow_ownership() {
+    dir="$1"
+    if [ -d "$dir" ]; then
+        find "$dir" -xdev -maxdepth 1 -not -uid "$PUID" -print0 2>/dev/null \
+            | xargs -0 -r chown "$PUID:$PGID" 2>/dev/null || true
+    fi
+}
+
 repair_app_tree_ownership() {
     if [ -d /app ]; then
         find /app -xdev \
@@ -86,7 +95,27 @@ repair_bind_mount_ownership() {
         return
     fi
 
-    repair_tree_ownership "$dir"
+    case "$ODYSSEUS_OWNERSHIP_REPAIR" in
+        full)
+            repair_tree_ownership "$dir"
+            ;;
+        skip)
+            :
+            ;;
+        roots|*)
+            case "$dir" in
+                /app/logs|/app/.ssh)
+                    repair_tree_ownership "$dir"
+                    ;;
+                /app/data)
+                    repair_shallow_ownership "$dir"
+                    ;;
+                *)
+                    chown "$PUID:$PGID" "$dir" 2>/dev/null || true
+                    ;;
+            esac
+            ;;
+    esac
 }
 
 # Repair image-owned writable paths without walking into bind-mounted host

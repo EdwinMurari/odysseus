@@ -1,41 +1,59 @@
-# AGENTS.md -- Odysseus source
+# AGENTS.md -- Odysseus
 
-## Runtime
+Mac edit only. Run nothing on Mac.
 
-- Mac edits only. Do not build, test, run, or deploy on Mac.
-- Runtime host: `winpc`; WSL shell: `wsl -d Ubuntu -u root`.
-- WSL repo: `/mnt/d/Projects/Ai/odysseus`.
-- Deploy entrypoint: `./dev-stack.sh` in WSL Docker Engine. Do not use Docker Desktop or `dev-stack.ps1` over SSH.
-- App URL: `https://edwin-work.taila70345.ts.net`; keep `APP_BIND=127.0.0.1`.
+## Paths
 
-Detached deploy from Mac:
+- Mac source: `odysseus_src/`
+- WSL source: `/mnt/d/Projects/Ai/odysseus`
+- Host: `winpc`
+- WSL shell: `wsl -d Ubuntu -u root`
+- URL: `https://edwin-work.taila70345.ts.net`
+- Keep `APP_BIND=127.0.0.1`
+
+## Run
+
+Use WSL Docker Engine only. No Docker Desktop. No `dev-stack.ps1`.
+
+```bash
+ssh winpc 'wsl -d Ubuntu -u root bash -lc "cd /mnt/d/Projects/Ai/odysseus && ./dev-stack.sh dev"'
+```
+
+Long rebuild:
 
 ```bash
 ssh winpc 'wsl -d Ubuntu -u root bash -lc "cd /mnt/d/Projects/Ai/odysseus && nohup ./dev-stack.sh rebuild --scope All > /tmp/odys-deploy.log 2>&1 & echo started"'
 ssh winpc 'wsl -d Ubuntu -u root bash -lc "tail -n 40 /tmp/odys-deploy.log"'
 ```
 
-`dev-stack.sh`: `up | rebuild | restart | status | logs | down`.
-Use `--scope App` for Odysseus-only code; use `--scope All` after Docker, dependency, Compose, or capability-repo changes.
+## Loop
+
+- Hot reload: `./dev-stack.sh dev`.
+- App source change: no rebuild.
+- App image/runtime change: `./dev-stack.sh rebuild --scope App`.
+- Compose, capability, shared worker change: `./dev-stack.sh rebuild --scope All`.
+- Do not use `--scope All` for normal Odysseus app edits.
+
+Hot reload command:
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 7000 --reload
+```
 
 ## Capabilities
 
-- `pain-miner` and `stock-research` are Odysseus capabilities, not standalone apps to run independently.
-- Mac sibling wrappers point to the same SMB sources:
-  - `/Users/edwin/Documents/Projects/pain-miner/pain-miner_src` -> `/Volumes/Projects/Ai/pain-miner`
-  - `/Users/edwin/Documents/Projects/stock-research/stock-research_src` -> `/Volumes/Projects/Ai/stock-research`
-- WSL paths expected by Odysseus Compose:
+- `pain-miner` and `stock-research` run only through Odysseus.
+- Mac wrappers:
+  - `/Users/edwin/Documents/Projects/pain-miner/pain-miner_src`
+  - `/Users/edwin/Documents/Projects/stock-research/stock-research_src`
+- WSL paths:
   - `/mnt/d/Projects/Ai/pain-miner`
   - `/mnt/d/Projects/Ai/stock-research`
-- Capability workers are built and run only through Odysseus `dev-stack.sh` with the capabilities overlay.
+- Capability source change: no rebuild when dev stack active.
+- Shared worker files: `libs/capability_kit`, `integrations/capabilities`, `docker/capability-worker.*`.
 
-## Hardware
+## GPU
 
-- Host GPU: RTX 3080 10GB; target usable VRAM is about 9GB because the desktop shares the card.
-- Serve exactly two GPU models unless measured otherwise: chat Gemma 3 12B IT GGUF Q4_K_M plus EmbeddingGemma-300m Q8_0.
-- If VRAM is high, prefer: chat context 8192 -> 4096, then move embeddings to CPU, then Q4_K_S chat weights. Do not partially offload the 12B model.
-
-## References
-
-- Capability architecture: `docs/capabilities.md`.
-- Runtime wrapper: `dev-stack.sh`.
+- RTX 3080 10GB. Budget about 9GB VRAM.
+- Models: Gemma 3 12B IT GGUF Q4_K_M + EmbeddingGemma-300m Q8_0.
+- If VRAM tight: context 8192 -> 4096, then embeddings CPU, then Q4_K_S. No partial 12B offload.
