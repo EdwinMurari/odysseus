@@ -191,9 +191,13 @@ function renderCatalog() {
     return `<button class="cap-catalog-item${item.id === _selectedId ? ' active' : ''}" data-capability-id="${esc(item.id)}">
       <span class="cap-icon">${icon(item.icon)}</span>
       <span class="cap-catalog-copy">
-        <strong>${esc(item.name)}</strong>
+        <span class="cap-catalog-top">
+          <strong>${esc(item.name)}</strong>
+          ${item.active_run_count ? `<span class="cap-active-count">${esc(item.active_run_count)}</span>` : ''}
+          <span class="cap-state ${state}">${label}</span>
+        </span>
         <small>${esc(item.category)} · v${esc(item.version)}</small>
-        <small>${item.active_run_count
+        <small class="cap-catalog-meta">${item.active_run_count
           ? `${esc(item.active_run_count)} active`
           : item.schedules?.[0]?.next_run
             ? `Next ${esc(new Date(item.schedules[0].next_run).toLocaleString())}`
@@ -201,8 +205,6 @@ function renderCatalog() {
               ? `Last ${esc(new Date(item.last_run.created_at).toLocaleString())}`
               : 'Never run'}</small>
       </span>
-      ${item.active_run_count ? `<span class="cap-active-count">${item.active_run_count}</span>` : ''}
-      <span class="cap-state ${state}">${label}</span>
     </button>`;
   }).join('');
   list.scrollTop = scrollTop;

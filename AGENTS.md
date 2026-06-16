@@ -1,5 +1,41 @@
 @C:\Users\murar\.codex\RTK.md
 
+## Mac ↔ Windows workflow (read first)
+
+Development happens on a MacBook Air, but the app **only runs on the Windows 11
+PC** (`winpc`, RTX 3080). There is exactly one copy of the code, and it lives on
+the PC.
+
+- **Files / single source of truth.** The Windows repo is SMB-mounted on the Mac
+  at `/Volumes/Projects/Ai/odysseus` and symlinked to
+  `/Users/edwin/Documents/Projects/odysseus`. Editing either path writes the same
+  Windows files — no second clone, no sync step.
+- **Never build, run, or deploy on the Mac.** Docker and the GPU exist only on
+  Windows. An agent running on the Mac must execute every build/run/deploy over
+  SSH on `winpc`, e.g.:
+  ```bash
+  ssh winpc "cd D:/Projects/Ai/odysseus; .\dev-stack.ps1 rebuild"
+  ```
+  (`winpc` = the PC's Tailscale SSH alias; adjust the path if your share root
+  differs.)
+- **Canonical deploy is `dev-stack.ps1` (Docker)** — see "Odysseus runtime"
+  below. Do **not** use `launch-windows.ps1` or a bare `docker compose` command
+  for the GPU deployment.
+- **Access the running app from the Mac** at the tailnet HTTPS hostname:
+  `https://edwin-work.taila70345.ts.net`. Tailscale Serve on the PC terminates
+  HTTPS and reverse-proxies to the loopback Docker app (`127.0.0.1:7000`). Keep
+  `APP_BIND=127.0.0.1`; do not bind the container to `0.0.0.0` or the LAN.
+- **Network.** SSH (22) and SMB (445) are firewalled to the tailnet
+  (`100.64.0.0/10`) only; nothing is exposed to the LAN or the internet.
+
+Daily loop from the Mac:
+
+```bash
+ssh winpc "cd D:/Projects/Ai/odysseus; .\dev-stack.ps1 up"        # start (existing images)
+ssh winpc "cd D:/Projects/Ai/odysseus; .\dev-stack.ps1 rebuild"   # after app code changes
+ssh winpc "cd D:/Projects/Ai/odysseus; .\dev-stack.ps1 logs"      # snapshot logs
+```
+
 ## Odysseus runtime
 
 Use `dev-stack.ps1` as the canonical Windows development entry point. Do not
