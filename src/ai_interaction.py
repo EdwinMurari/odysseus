@@ -943,10 +943,10 @@ async def do_manage_session(content: str, session_id: Optional[str] = None, owne
 # ---------------------------------------------------------------------------
 
 async def do_manage_memory(content: str, session_id: Optional[str] = None, owner: Optional[str] = None) -> Dict:
-    """Manage memories: list, add, edit, delete, search.
+    """Manage memories: list, add, edit, delete, search, tidy.
 
     Content format:
-      Line 1: action (list|add|edit|delete|search)
+      Line 1: action (list|add|edit|delete|search|tidy)
       Line 2+: action-specific params
 
     Actions:
@@ -955,6 +955,7 @@ async def do_manage_memory(content: str, session_id: Optional[str] = None, owner
       edit                    — line 2: memory_id, line 3: new text
       delete                  — line 2: memory_id
       search                  — line 2: query
+      tidy                    — deduplicate/consolidate memories via the task model
     """
     if not _memory_manager:
         return {"error": "Memory manager not available"}
@@ -1100,8 +1101,73 @@ async def do_manage_memory(content: str, session_id: Optional[str] = None, owner
             result_lines.append(f"- [{cat}] `{mid}` — {text}")
         return {"results": "\n".join(result_lines)}
 
+    elif action in ("tidy", "audit", "clean", "consolidate"):
+        fallback_url = fallback_model = None
+        fallback_headers = None
+        if session_id and _session_manager:
+            try:
+                session = _session_manager.get_session(session_id)
+            except KeyError:
+                session = None
+            if session is not None:
+                if owner is not None and getattr(session, "owner", None) != owner:
+                    return {"error": "Session not found"}
+                fallback_url = getattr(session, "endpoint_url", None)
+                fallback_model = getattr(session, "model", None)
+                fallback_headers = getattr(session, "headers", None)
+
+        from services.memory.memory_extractor import audit_memories
+        from src.task_endpoint import resolve_task_endpoint
+
+        endpoint_url, model, headers = resolve_task_endpoint(
+            fallback_url,
+            fallback_model,
+            fallback_headers,
+            owner=owner,
+        )
+        if not endpoint_url or not model:
+            return {"error": "No default model configured - set one in Settings"}
+
+        result = await audit_memories(
+            _memory_manager,
+            _memory_vector,
+            endpoint_url,
+            model,
+            headers,
+            owner=owner,
+        )
+
+        before = int(result.get("before", 0) or 0)
+        after = int(result.get("after", before) or 0)
+        removed = max(before - after, 0)
+        already_tidy = bool(result.get("already_tidy"))
+        if "error" in result:
+            return {
+                "action": "tidy",
+                "ok": False,
+                "before": before,
+                "after": after,
+                "removed": removed,
+                "error": f"Tidy failed: {result['error']}",
+                "results": f"Tidy failed: {result['error']}",
+            }
+
+        if already_tidy or removed == 0:
+            message = "Already clean."
+        else:
+            message = f"Tidied memories: {removed} removed/merged ({before} -> {after})."
+        return {
+            "action": "tidy",
+            "ok": True,
+            "before": before,
+            "after": after,
+            "removed": removed,
+            "already_tidy": already_tidy,
+            "results": message,
+        }
+
     else:
-        return {"error": f"Unknown action '{action}'. Use: list, add, edit, delete, search"}
+        return {"error": f"Unknown action '{action}'. Use: list, add, edit, delete, search, tidy"}
 
 
 # ---------------------------------------------------------------------------

@@ -514,8 +514,12 @@ export async function tidyMemories() {
   const beforeMap = new Map(memories.map(m => [m.id, { ...m }]));
 
   try {
+    const form = new FormData();
+    const sessionId = window.sessionModule?.getCurrentSessionId?.();
+    if (sessionId) form.append('session', sessionId);
     const res = await fetch(`${window.location.origin}/api/memory/audit`, {
       method: 'POST',
+      body: form,
     });
 
     if (!res.ok) {
@@ -562,7 +566,7 @@ export async function tidyMemories() {
     showToast(`Tidied: ${data.removed} removed (${data.before} \u2192 ${data.after})`);
   } catch (error) {
     console.error('Tidy failed:', error);
-    showError('Tidy failed — check console');
+    showError(`Tidy failed: ${error.message || 'check console'}`);
   } finally {
     if (tidySpinner) tidySpinner.destroy();
     if (tidyBtn) {
